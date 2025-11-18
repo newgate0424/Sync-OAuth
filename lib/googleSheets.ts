@@ -1,18 +1,76 @@
 import { google } from 'googleapis';
 import path from 'path';
 import fs from 'fs';
+import { getMongoDb } from './mongoDb';
 
-const SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
+const SCOPES = [
+  'https://www.googleapis.com/auth/spreadsheets.readonly',
+  'https://www.googleapis.com/auth/drive.readonly',
+];
 
+/**
+ * ดึง Google Sheets client
+ * - ถ้ามี OAuth tokens ใน MongoDB จะใช้ OAuth
+ * - ถ้าไม่มี จะใช้ Service Account (backward compatible)
+ */
 export async function getGoogleSheetsClient() {
+  // ลองใช้ OAuth ก่อน
+  try {
+    const db = await getMongoDb();
+    const tokenDoc = await db.collection('google_tokens').findOne({});
+    
+    if (tokenDoc && tokenDoc.access_token) {
+      console.log('🔐 Using OAuth 2.0 authentication');
+      
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI
+      );
+
+      oauth2Client.setCredentials({
+        access_token: tokenDoc.access_token,
+        refresh_token: tokenDoc.refresh_token,
+        expiry_date: tokenDoc.expiry_date,
+        token_type: tokenDoc.token_type,
+        scope: tokenDoc.scope,
+      });
+
+      // ถ้า token หมดอายุ จะ refresh อัตโนมัติ
+      oauth2Client.on('tokens', async (tokens) => {
+        console.log('🔄 Refreshing OAuth tokens...');
+        await db.collection('google_tokens').updateOne(
+          { _id: tokenDoc._id },
+          {
+            $set: {
+              access_token: tokens.access_token,
+              expiry_date: tokens.expiry_date,
+              refresh_token: tokens.refresh_token || tokenDoc.refresh_token,
+              updated_at: new Date(),
+            },
+          }
+        );
+      });
+
+      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+      return sheets;
+    }
+  } catch (error) {
+    console.warn('⚠️  OAuth authentication not available, falling back to Service Account');
+  }
+
+  // Fallback: ใช้ Service Account (เดิม)
   const credentialsPath = path.join(process.cwd(), 'credentials.json');
   
-  // Check if credentials.json exists
   if (!fs.existsSync(credentialsPath)) {
-    console.warn('⚠️  credentials.json not found. Google Sheets sync will not work.');
-    console.warn('📋 Download from: https://console.cloud.google.com/apis/credentials');
-    throw new Error('Google Sheets credentials not configured');
+    console.error('❌ No authentication method available!');
+    console.error('📋 Please either:');
+    console.error('   1. Connect Google Account via Settings page, OR');
+    console.error('   2. Add credentials.json for Service Account');
+    throw new Error('Google Sheets authentication not configured');
   }
+  
+  console.log('🔑 Using Service Account authentication');
   
   const auth = new google.auth.GoogleAuth({
     keyFile: credentialsPath,
