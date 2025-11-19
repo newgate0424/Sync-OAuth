@@ -2,13 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Database, Check, X, AlertCircle, Link as LinkIcon, Unlink } from 'lucide-react';
+import { Database, Check, X, AlertCircle, Link as LinkIcon, Unlink, HardDrive, RefreshCw } from 'lucide-react';
 
 interface GoogleAccount {
   email: string;
   name: string;
   picture: string;
   connected_at: string;
+}
+
+interface Backup {
+  id: string;
+  created_at: string;
+  database_type: string;
+  tables_count: number;
+  total_rows: number;
+  size_mb: number;
+  status: string;
 }
 
 function SettingsPageContent() {
@@ -24,11 +34,16 @@ function SettingsPageContent() {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccount[]>([]);
   const [loadingGoogle, setLoadingGoogle] = useState(true);
+  const [backups, setBackups] = useState<Backup[]>([]);
+  const [loadingBackups, setLoadingBackups] = useState(true);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [restoringBackup, setRestoringBackup] = useState<string | null>(null);
 
   useEffect(() => {
     checkAuth();
     fetchCurrentConnection();
     fetchGoogleStatus();
+    fetchBackups();
     
     // เช็ค URL parameters สำหรับ success/error messages
     const success = searchParams.get('success');
@@ -55,6 +70,69 @@ function SettingsPageContent() {
       console.error('Error fetching Google status:', error);
     } finally {
       setLoadingGoogle(false);
+    }
+  };
+
+  const fetchBackups = async () => {
+    try {
+      const response = await fetch('/api/backup');
+      if (response.ok) {
+        const data = await response.json();
+        setBackups(data.backups || []);
+      }
+    } catch (error) {
+      console.error('Error fetching backups:', error);
+    } finally {
+      setLoadingBackups(false);
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true);
+    try {
+      const response = await fetch('/api/backup', {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        showToast(`Backup สำเร็จ: ${data.tables_count} ตาราง, ${data.total_rows} แถว, ${data.size_mb.toFixed(2)} MB`, 'success');
+        fetchBackups();
+      } else {
+        const error = await response.json();
+        showToast(error.error || 'ไม่สามารถสร้าง backup ได้', 'error');
+      }
+    } catch (error) {
+      showToast('เกิดข้อผิดพลาด', 'error');
+    } finally {
+      setCreatingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async (backupId: string) => {
+    if (!confirm('⚠️ คำเตือน: การ Restore จะลบข้อมูลปัจจุบันและแทนที่ด้วยข้อมูลจาก Backup\n\nต้องการดำเนินการต่อหรือไม่?')) {
+      return;
+    }
+
+    setRestoringBackup(backupId);
+    try {
+      const response = await fetch('/api/backup/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup_id: backupId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        showToast(`Restore สำเร็จ: ${data.restored_tables} ตาราง, ${data.restored_rows} แถว`, 'success');
+      } else {
+        const error = await response.json();
+        showToast(error.error || 'ไม่สามารถ restore ได้', 'error');
+      }
+    } catch (error) {
+      showToast('เกิดข้อผิดพลาด', 'error');
+    } finally {
+      setRestoringBackup(null);
     }
   };
 
@@ -341,6 +419,121 @@ function SettingsPageContent() {
                 </svg>
                 Connect with Google
               </button>
+            </div>
+          )}
+        </div>
+
+        {/* Database Backup Section */}
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <HardDrive className="w-6 h-6 text-purple-600" />
+              <h1 className="text-2xl font-bold text-gray-900">Database Backup</h1>
+            </div>
+            <button
+              onClick={handleCreateBackup}
+              disabled={creatingBackup}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            >
+              {creatingBackup ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  กำลัง Backup...
+                </>
+              ) : (
+                <>
+                  <HardDrive className="w-4 h-4" />
+                  Backup ทันที
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-purple-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-purple-800">
+                <p className="font-medium mb-1">ระบบ Backup อัตโนมัติ</p>
+                <ul className="list-disc list-inside space-y-1">
+                  <li>Backup ข้อมูลทุกวันเวลา 02:00 น.</li>
+                  <li>เก็บ backup ไว้ 30 วัน</li>
+                  <li>ลบ backup เก่ากว่า 30 วันอัตโนมัติ</li>
+                  <li>สามารถสร้าง backup เองได้ทุกเมื่อ</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          {loadingBackups ? (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
+            </div>
+          ) : backups.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              <HardDrive className="w-12 h-12 mx-auto mb-2 opacity-50" />
+              <p>ยังไม่มี backup</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-gray-700 mb-3">
+                Backup ล่าสุด ({backups.length} รายการ)
+              </h3>
+              {backups.slice(0, 10).map((backup) => (
+                <div 
+                  key={backup.id} 
+                  className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-900">
+                        {new Date(backup.created_at).toLocaleString('th-TH', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                      <span className={`px-2 py-0.5 text-xs rounded-full ${
+                        backup.status === 'completed' 
+                          ? 'bg-green-100 text-green-800' 
+                          : backup.status === 'in_progress'
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {backup.status}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">
+                      {backup.tables_count} ตาราง • {backup.total_rows.toLocaleString()} แถว • {backup.size_mb.toFixed(2)} MB
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 mr-2">
+                      {backup.database_type}
+                    </span>
+                    {backup.status === 'completed' && (
+                      <button
+                        onClick={() => handleRestoreBackup(backup.id)}
+                        disabled={restoringBackup !== null}
+                        className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {restoringBackup === backup.id ? (
+                          <>
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                            Restoring...
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-3 h-3" />
+                            Restore
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

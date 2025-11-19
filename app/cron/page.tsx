@@ -314,18 +314,28 @@ export default function CronPage() {
       '*/10 * * * * *': 'ทุก 10 วินาที',
       '*/30 * * * * *': 'ทุก 30 วินาที',
       '0 * * * * *': 'ทุก 1 นาที',
-      '0 */2 * * * *': 'ทุก 2 นาที',
       '0 */5 * * * *': 'ทุก 5 นาที',
       '0 */10 * * * *': 'ทุก 10 นาที',
+      '0 */30 * * * *': 'ทุก 30 นาที',
       '0 0 * * * *': 'ทุก 1 ชั่วโมง',
     };
-    return scheduleMap[schedule] || schedule;
+    
+    if (scheduleMap[schedule]) return scheduleMap[schedule];
+    
+    // Parse custom seconds
+    if (schedule.startsWith('*/') && schedule.endsWith('* * * * *')) {
+      const seconds = schedule.split(' ')[0].replace('*/', '');
+      return `ทุก ${seconds} วินาที`;
+    }
+    
+    return schedule;
   };
 
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return 'N/A';
     const date = new Date(dateStr);
     return date.toLocaleString('th-TH', {
+      timeZone: 'Asia/Bangkok',
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -572,6 +582,10 @@ export default function CronPage() {
                   onChange={(e) => {
                     if (e.target.value === 'custom') {
                       setIsCustomSchedule(true);
+                      // Default to 30 seconds if switching to custom
+                      const defaultCustom = '*/30 * * * * *';
+                      setCustomSchedule(defaultCustom);
+                      setFormData({ ...formData, schedule: defaultCustom });
                     } else {
                       setIsCustomSchedule(false);
                       setFormData({ ...formData, schedule: e.target.value });
@@ -582,30 +596,39 @@ export default function CronPage() {
                   <option value="*/10 * * * * *">ทุก 10 วินาที</option>
                   <option value="*/30 * * * * *">ทุก 30 วินาที</option>
                   <option value="0 * * * * *">ทุก 1 นาที</option>
-                  <option value="0 */2 * * * *">ทุก 2 นาที</option>
                   <option value="0 */5 * * * *">ทุก 5 นาที</option>
                   <option value="0 */10 * * * *">ทุก 10 นาที</option>
+                  <option value="0 */30 * * * *">ทุก 30 นาที</option>
                   <option value="0 0 * * * *">ทุก 1 ชั่วโมง</option>
                   <option value="custom">กำหนดเอง (Custom)</option>
                 </select>
                 {isCustomSchedule && (
-                  <div className="mt-3 space-y-3">
+                  <div className="mt-3 space-y-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                     <div>
-                      <label className="block text-xs text-gray-600 mb-1">Cron Expression</label>
-                      <input
-                        type="text"
-                        value={customSchedule}
-                        onChange={(e) => {
-                          setCustomSchedule(e.target.value);
-                          setFormData({ ...formData, schedule: e.target.value });
-                        }}
-                        placeholder="*/30 * * * * * (ทุก 30 วินาที)"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-                      />
+                      <label className="block text-xs font-medium text-gray-700 mb-1">ทำงานทุกๆ (วินาที)</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="10"
+                          max="3600"
+                          value={customSchedule.startsWith('*/') ? customSchedule.split(' ')[0].replace('*/', '') : '30'}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 30;
+                            // Ensure minimum 10 seconds to prevent spam
+                            const seconds = Math.max(10, val); 
+                            const cron = `*/${seconds} * * * * *`;
+                            setCustomSchedule(cron);
+                            setFormData({ ...formData, schedule: cron });
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-sm text-gray-500">วินาที</span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">Cron Expression: {customSchedule}</p>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="block text-xs text-gray-600 mb-1">เวลาเริ่ม</label>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">เวลาเริ่ม (Start Time)</label>
                         <input
                           type="time"
                           value={startTime}
@@ -614,7 +637,7 @@ export default function CronPage() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs text-gray-600 mb-1">เวลาสิ้นสุด</label>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">เวลาสิ้นสุด (End Time)</label>
                         <input
                           type="time"
                           value={endTime}
@@ -623,10 +646,18 @@ export default function CronPage() {
                         />
                       </div>
                     </div>
-                    <p className="text-xs text-gray-500">ระบบจะทำงานเฉพาะช่วงเวลาที่กำหนด</p>
+                    <p className="text-xs text-blue-600 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" />
+                      ระบบจะทำงานเฉพาะในช่วงเวลาที่กำหนดเท่านั้น
+                    </p>
                   </div>
                 )}
                 <p className="text-xs text-gray-500 mt-1">{formatSchedule(formData.schedule)}</p>
+                {isCustomSchedule && startTime && endTime && (
+                  <p className="text-xs text-gray-500">
+                    ช่วงเวลา: {startTime} - {endTime}
+                  </p>
+                )}
               </div>
             </div>
 

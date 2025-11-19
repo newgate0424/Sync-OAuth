@@ -205,37 +205,32 @@ function getNextRunTime(job: CronJob): Date {
   const now = new Date();
   
   // Parse cron expression แบบง่ายๆ สำหรับ 6 parts (seconds minute hour day month dayOfWeek)
-  if (schedule === '*/10 * * * * *') {
-    // ทุก 10 วินาที
-    now.setSeconds(now.getSeconds() + 10);
-  } else if (schedule === '*/30 * * * * *') {
-    // ทุก 30 วินาที
-    now.setSeconds(now.getSeconds() + 30);
+  if (schedule.startsWith('*/') && schedule.endsWith('* * * * *')) {
+    // Pattern: */X * * * * * (Every X seconds)
+    const seconds = parseInt(schedule.split(' ')[0].replace('*/', '')) || 30;
+    now.setSeconds(now.getSeconds() + seconds);
+  } else if (schedule.startsWith('0 */') && schedule.endsWith('* * * *')) {
+    // Pattern: 0 */X * * * * (Every X minutes)
+    const minutes = parseInt(schedule.split(' ')[1].replace('*/', '')) || 5;
+    now.setSeconds(0);
+    now.setMinutes(now.getMinutes() + minutes);
   } else if (schedule === '0 * * * * *') {
     // ทุก 1 นาที
     now.setSeconds(0);
     now.setMinutes(now.getMinutes() + 1);
-  } else if (schedule === '0 */2 * * * *') {
-    // ทุก 2 นาที
-    now.setSeconds(0);
-    now.setMinutes(now.getMinutes() + 2);
-  } else if (schedule === '0 */5 * * * *') {
-    // ทุก 5 นาที
-    now.setSeconds(0);
-    now.setMinutes(now.getMinutes() + 5);
-  } else if (schedule === '0 */10 * * * *') {
-    // ทุก 10 นาที
-    now.setSeconds(0);
-    now.setMinutes(now.getMinutes() + 10);
   } else if (schedule === '0 0 * * * *') {
     // ทุก 1 ชั่วโมง
     now.setSeconds(0);
     now.setMinutes(0);
     now.setHours(now.getHours() + 1);
   } else {
-    // Default: ทุก 5 นาที
-    now.setSeconds(0);
-    now.setMinutes(now.getMinutes() + 5);
+    // Default fallback
+    try {
+      // Try to use cron-parser if available, or just add 5 minutes
+      now.setMinutes(now.getMinutes() + 5);
+    } catch (e) {
+      now.setMinutes(now.getMinutes() + 5);
+    }
   }
   
   return now;
@@ -245,8 +240,10 @@ function getNextRunTime(job: CronJob): Date {
 function isWithinTimeRange(job: CronJob): boolean {
   if (!job.startTime || !job.endTime) return true;
   
+  // Convert current time to Bangkok time (GMT+7)
   const now = new Date();
-  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const bangkokDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+  const currentTime = `${String(bangkokDate.getHours()).padStart(2, '0')}:${String(bangkokDate.getMinutes()).padStart(2, '0')}`;
   
   const start = job.startTime;
   const end = job.endTime;

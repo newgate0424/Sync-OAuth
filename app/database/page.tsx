@@ -20,7 +20,7 @@ interface Dataset {
 }
 
 interface Folder {
-  id?: number;
+  id?: string;
   name: string;
   expanded: boolean;
   tables: TableInfo[];
@@ -60,6 +60,11 @@ function DatabasePageContent() {
   const [hasHeader, setHasHeader] = useState(true);
   const [dbType, setDbType] = useState<'mysql' | 'postgresql'>('postgresql');
   const [syncConfig, setSyncConfig] = useState<any>(null);
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [driveFiles, setDriveFiles] = useState<any[]>([]);
+  const [loadingDriveFiles, setLoadingDriveFiles] = useState(false);
+  const [showDrivePicker, setShowDrivePicker] = useState(false);
+  const [driveSearchQuery, setDriveSearchQuery] = useState('');
   
   // Save activeTab to localStorage whenever it changes
   const handleTabChange = (tab: 'schema' | 'details' | 'preview') => {
@@ -126,6 +131,7 @@ function DatabasePageContent() {
   useEffect(() => {
     fetchDatasets();
     fetchDatabaseType();
+    fetchGoogleStatus();
     // รัน auto migration
     runAutoMigration();
     
@@ -136,6 +142,43 @@ function DatabasePageContent() {
     
     return () => clearInterval(interval);
   }, []);
+
+  const fetchGoogleStatus = async () => {
+    try {
+      const response = await fetch('/api/auth/google/status');
+      if (response.ok) {
+        const data = await response.json();
+        setGoogleConnected(data.connected);
+      }
+    } catch (error) {
+      console.error('Error fetching Google status:', error);
+    }
+  };
+
+  const loadDriveFiles = async () => {
+    setLoadingDriveFiles(true);
+    try {
+      const response = await fetch('/api/google/drive/files');
+      if (response.ok) {
+        const data = await response.json();
+        setDriveFiles(data.files || []);
+        setShowDrivePicker(true);
+      } else {
+        const error = await response.json();
+        showToast(error.error || 'ไม่สามารถโหลดไฟล์จาก Google Drive ได้', 'error');
+      }
+    } catch (error) {
+      showToast('เกิดข้อผิดพลาดในการโหลดไฟล์', 'error');
+    } finally {
+      setLoadingDriveFiles(false);
+    }
+  };
+
+  const selectDriveFile = (file: any) => {
+    setSheetUrl(file.url);
+    setShowDrivePicker(false);
+    showToast(`เลือกไฟล์: ${file.name}`, 'success');
+  };
 
   const runAutoMigration = async () => {
     try {
@@ -243,6 +286,8 @@ function DatabasePageContent() {
         tables: []
       }));
       
+      const validFolderIds = new Set(folders.map((f: any) => f.id));
+
       // Load expanded states from localStorage
       const savedExpandedDatasets = JSON.parse(localStorage.getItem('expandedDatasets') || '{}');
       const savedExpandedFolders = JSON.parse(localStorage.getItem('expandedFolders') || '{}');
@@ -250,10 +295,15 @@ function DatabasePageContent() {
       // จัดกลุ่มตารางตาม folder_id
       const folderTableMap: any = {};
       foldersData.folderTables.forEach((ft: any) => {
-        if (!folderTableMap[ft.folder_id]) {
-          folderTableMap[ft.folder_id] = [];
+        // ตรวจสอบว่า folder_id มีอยู่จริงใน folders หรือไม่ (ป้องกัน orphaned tables)
+        // แปลงเป็น string เพื่อความชัวร์ในการเปรียบเทียบ
+        const folderIdStr = String(ft.folder_id);
+        if (validFolderIds.has(folderIdStr)) {
+          if (!folderTableMap[folderIdStr]) {
+            folderTableMap[folderIdStr] = [];
+          }
+          folderTableMap[folderIdStr].push(ft.table_name);
         }
-        folderTableMap[ft.folder_id].push(ft.table_name);
       });
       
       // รวมข้อมูล datasets กับ folders และกระจายตารางไปในโฟลเดอร์
@@ -372,8 +422,8 @@ function DatabasePageContent() {
     setOpenMenu(null);
   };
 
-  const deleteFolder = (datasetName: string, folderId: number) => {
-    setShowDialog({ type: 'deleteFolder', dataset: datasetName, folder: String(folderId) });
+  const deleteFolder = (datasetName: string, folderId: string) => {
+    setShowDialog({ type: 'deleteFolder', dataset: datasetName, folder: folderId });
     setOpenMenu(null);
   };
 
@@ -498,7 +548,27 @@ function DatabasePageContent() {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ folderId: showDialog.folder })
-        }).then(() => fetchDatasets());
+        })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Failed to delete folder');
+          }
+          if (data.deletedFolder === 0) {
+             showToast('ไม่พบโฟลเดอร์ที่ต้องการลบ (อาจถูกลบไปแล้ว)', 'info');
+          } else {
+             showToast(`ลบโฟลเดอร์สำเร็จ (ลบ ${data.deletedTables} ตาราง)`, 'success');
+          }
+          // Force refresh datasets
+          await fetchDatasets();
+          // Clear selection if deleted folder was selected
+          if (selectedFolder && selectedFolder.folderName === showDialog.oldName) {
+            setSelectedFolder(null);
+          }
+        })
+        .catch(err => {
+          showToast(err.message, 'error');
+        });
         break;
 
       case 'deleteTable':
@@ -1942,6 +2012,11 @@ function DatabasePageContent() {
                 {showDialog.type === 'switchDatabase' && 'เปลี่ยนฐานข้อมูล'}
                 {showDialog.type === 'createFolder' && 'สร้างโฟลเดอร์ใหม่'}
                 {showDialog.type === 'renameFolder' && 'เปลี่ยนชื่อโฟลเดอร์'}
+                {showDialog.type === 'deleteFolder' && (
+                  <div className="text-sm text-gray-500 mb-4">
+                    Folder ID: {showDialog.folder}
+                  </div>
+                )}
                 {showDialog.type === 'deleteFolder' && 'ยืนยันการลบโฟลเดอร์'}
                 {showDialog.type === 'createTable' && 'สร้างตารางใหม่'}
                 {showDialog.type === 'deleteTable' && 'ยืนยันการลบตาราง'}
@@ -2053,6 +2128,7 @@ function DatabasePageContent() {
               {createTableStep === 1 && (
                 <div className="space-y-4">
                   <h3 className="text-lg font-semibold text-gray-800">เพิ่มลิงค์ Google Sheets</h3>
+                  
                   <p className="text-sm text-gray-600">วางลิงค์ Google Sheets ของคุณที่นี่</p>
                   
                   <div className="space-y-2">
@@ -2065,6 +2141,28 @@ function DatabasePageContent() {
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
+
+                  {googleConnected && <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-gray-300"></div>
+                    </div>
+                    <div className="relative flex justify-center text-sm">
+                      <span className="px-2 bg-white text-gray-500">หรือ</span>
+                    </div>
+                  </div>}
+
+                  {googleConnected && (
+                    <div className="mb-4">
+                      <button
+                        onClick={loadDriveFiles}
+                        disabled={loadingDriveFiles}
+                        className="w-full px-4 py-3 bg-green-50 border-2 border-green-500 text-green-700 rounded-lg hover:bg-green-100 transition-colors font-medium flex items-center justify-center gap-2"
+                      >
+                        <Database className="w-5 h-5" />
+                        {loadingDriveFiles ? 'กำลังโหลด...' : 'เลือกไฟล์จาก Google Drive ของฉัน'}
+                      </button>
+                    </div>
+                  )}
 
                   <button
                     onClick={handleSheetUrlSubmit}
@@ -2289,6 +2387,85 @@ function DatabasePageContent() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Google Drive File Picker Dialog */}
+      {showDrivePicker && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-hidden">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">เลือกไฟล์จาก Google Drive</h2>
+                <p className="text-sm text-gray-600 mt-1">เลือก Google Sheets ที่ต้องการซิงค์</p>
+              </div>
+              <button
+                onClick={() => setShowDrivePicker(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Search Input */}
+            <div className="p-4 border-b border-gray-100 bg-gray-50">
+              <div className="relative">
+                <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="ค้นหาไฟล์..."
+                  value={driveSearchQuery}
+                  onChange={(e) => setDriveSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="p-6 overflow-y-auto max-h-[calc(80vh-240px)]">
+              {driveFiles.filter(f => f.name.toLowerCase().includes(driveSearchQuery.toLowerCase())).length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                  <p>ไม่พบไฟล์ Google Sheets {driveSearchQuery && `ที่ตรงกับ "${driveSearchQuery}"`}</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {driveFiles
+                    .filter(f => f.name.toLowerCase().includes(driveSearchQuery.toLowerCase()))
+                    .map((file) => (
+                    <button
+                      key={file.id}
+                      onClick={() => selectDriveFile(file)}
+                      className="w-full p-4 border border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors text-left flex items-center gap-3"
+                    >
+                      <img 
+                        src={file.iconLink || 'https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_spreadsheet_x16.png'} 
+                        alt="Sheet icon"
+                        className="w-8 h-8"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-gray-900 truncate">{file.name}</div>
+                        <div className="text-sm text-gray-500 flex items-center gap-2 mt-1">
+                          <span>โดย {file.owner}</span>
+                          <span>•</span>
+                          <span>แก้ไข: {new Date(file.modifiedTime).toLocaleDateString('th-TH')}</span>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-5 h-5 text-gray-400" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t border-gray-200">
+              <button
+                onClick={() => setShowDrivePicker(false)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Toast Notification */}

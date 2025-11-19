@@ -79,16 +79,41 @@ export async function DELETE(request: NextRequest) {
     const db = await getMongoDb();
     const { folderId } = await request.json();
     
+    console.log(`🗑️  Request to delete folder ID: ${folderId}`);
+
     if (!folderId) {
       return NextResponse.json({ error: 'Folder ID is required' }, { status: 400 });
     }
-    
-    // ดึงรายการตารางในโฟลเดอร์ก่อนลบ
+
     const folderObjectId = new ObjectId(folderId);
-    const tables = await db.collection('folder_tables')
-      .find({ folder_id: folderObjectId })
-      .toArray();
     
+    // ตรวจสอบว่ามีโฟลเดอร์อยู่จริงไหม
+    let existingFolder = await db.collection('folders').findOne({ _id: folderObjectId });
+    let targetFolderId: any = folderObjectId;
+
+    if (!existingFolder) {
+        console.log(`❌ Folder not found with ObjectId: ${folderId}`);
+        // ลองหาด้วย string id เผื่อเก็บผิด format
+        existingFolder = await db.collection('folders').findOne({ _id: folderId });
+        if (existingFolder) {
+             console.log(`⚠️ Found folder with String ID`);
+             targetFolderId = folderId;
+        } else {
+             return NextResponse.json({ success: true, deletedTables: 0, deletedFolder: 0, message: "Folder not found" });
+        }
+    }
+    console.log(`✓ Found folder: ${existingFolder.name} (ID: ${targetFolderId})`);
+
+    // ดึงรายการตารางในโฟลเดอร์ก่อนลบ (หาทั้งแบบ ObjectId และ String เพื่อความชัวร์)
+    const tables = await db.collection('folder_tables').find({ 
+      $or: [
+        { folder_id: folderObjectId },
+        { folder_id: folderId }
+      ]
+    }).toArray();
+    
+    console.log(`📋 Found ${tables.length} tables in folder`);
+
     // ลบตารางจริงจากฐานข้อมูล (MySQL/PostgreSQL)
     if (tables.length > 0) {
       const pool = await ensureDbInitialized();
@@ -97,12 +122,16 @@ export async function DELETE(request: NextRequest) {
       const mongoSettings = await db.collection('settings').findOne({ key: 'database_connection' });
       const dbType = mongoSettings?.dbType || 'mysql';
       
-      console.log(`🗑️  Deleting ${tables.length} tables from folder...`);
+      console.log(`🗑️  Deleting ${tables.length} tables from folder... (DB Type: ${dbType})`);
       
       for (const table of tables) {
         try {
-          // ลบตารางจริง (ใช้ double quotes สำหรับ PostgreSQL)
-          await pool.query(`DROP TABLE IF EXISTS "${table.table_name}"`);
+          // ลบตารางจริง
+          const dropQuery = dbType === 'mysql' 
+            ? `DROP TABLE IF EXISTS \`${table.table_name}\``
+            : `DROP TABLE IF EXISTS "${table.table_name}"`;
+            
+          await pool.query(dropQuery);
           console.log(`✅ Deleted table: ${table.table_name}`);
           
           // ลบ sync_config ของตารางนี้ด้วย
@@ -121,14 +150,22 @@ export async function DELETE(request: NextRequest) {
     }
     
     // ลบ records ใน folder_tables
-    const result = await db.collection('folder_tables').deleteMany({ folder_id: folderObjectId });
+    const result = await db.collection('folder_tables').deleteMany({ 
+      $or: [
+        { folder_id: folderObjectId },
+        { folder_id: folderId }
+      ]
+    });
+    console.log(`🗑️  Deleted ${result.deletedCount} records from folder_tables`);
     
     // ลบโฟลเดอร์
-    await db.collection('folders').deleteOne({ _id: folderObjectId });
+    const folderResult = await db.collection('folders').deleteOne({ _id: targetFolderId });
+    console.log(`🗑️  Deleted folder document: ${folderResult.deletedCount}`);
     
     return NextResponse.json({ 
       success: true,
-      deletedTables: result.deletedCount
+      deletedTables: result.deletedCount,
+      deletedFolder: folderResult.deletedCount
     });
   } catch (error: any) {
     console.error('Database error:', error);
