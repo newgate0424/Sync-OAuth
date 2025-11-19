@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { getMongoDb } from './mongoDb';
-import { performSync } from './syncService';
+import { performSync, cleanupStuckSyncLogs } from './syncService';
 import { performQueryJob } from './queryService';
 
 interface CronJob {
@@ -282,6 +282,62 @@ export async function initializeCronJobs() {
   try {
     globalForCron.cronScheduler!.schedulerInitialized = true;
     const db = await getMongoDb();
+
+    // 🧹 CLEANUP: Reset jobs that are marked as 'running' on startup
+    // This fixes the issue where jobs remain 'running' after a server restart/crash
+    console.log('[Cron] 🧹 Cleaning up stale running jobs on startup...');
+    
+    // 1. Cleanup MongoDB Cron Jobs
+    const cleanupResult = await db.collection('cron_jobs').updateMany(
+      { status: 'running' },
+      { 
+        $set: { 
+          status: null, 
+          updated_at: new Date(),
+          message: 'Reset by system startup' 
+        } 
+      }
+    );
+    if (cleanupResult.modifiedCount > 0) {
+      console.log(`[Cron] ✅ Reset ${cleanupResult.modifiedCount} stuck cron jobs to idle`);
+    }
+
+    // 2. Cleanup MySQL Sync Logs
+    await cleanupStuckSyncLogs();
+
+    // 🔄 SELF-HEALING: Add a background task to clear stuck jobs every minute
+    // This ensures we don't rely on the frontend to clear stuck jobs
+    if (!activeCronJobs.has('system-cleanup')) {
+      console.log('[Cron] 🛡️ Starting system self-healing task...');
+      const cleanupTask = cron.schedule('* * * * *', async () => {
+        try {
+          const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+          const stuckResult = await db.collection('cron_jobs').updateMany(
+            { 
+              status: 'running',
+              updated_at: { $lt: tenMinutesAgo }
+            },
+            { 
+              $set: { 
+                status: null, 
+                updated_at: new Date(),
+                message: 'Reset by system self-healing'
+              } 
+            }
+          );
+          if (stuckResult.modifiedCount > 0) {
+            console.log(`[Cron] 🛡️ Self-healing: Cleared ${stuckResult.modifiedCount} stuck jobs`);
+          }
+          
+          // Also cleanup MySQL logs periodically
+          await cleanupStuckSyncLogs();
+        } catch (err) {
+          console.error('[Cron] Self-healing error:', err);
+        }
+      });
+      activeCronJobs.set('system-cleanup', cleanupTask);
+    }
+
     const jobs = await db.collection('cron_jobs').find({ enabled: true }).toArray() as CronJob[];
     
     console.log(`[Cron] Initializing ${jobs.length} cron jobs...`);
@@ -366,7 +422,23 @@ export async function initializeCronJobs() {
           }
         } catch (error: any) {
           console.error(`[Cron] ✗✗✗ Fatal error in cron callback for ${job.name}:`, error);
-          // Ensure unlock on error
+          
+          // Ensure unlock on error and update status to failed
+          try {
+            const db = await getMongoDb();
+            await db.collection('cron_jobs').updateOne(
+              { _id: job._id },
+              { 
+                $set: { 
+                  status: 'failed',
+                  updated_at: new Date()
+                }
+              }
+            );
+          } catch (dbError) {
+            console.error(`[Cron] Failed to update status for failed job ${job.name}:`, dbError);
+          }
+          
           runningJobs.delete(lockKey);
         }
       });

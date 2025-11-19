@@ -6,14 +6,14 @@ export async function GET() {
   try {
     const db = await getMongoDb();
     
-    // หา jobs ที่ running นานเกิน 15 นาที
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    // หา jobs ที่ running นานเกิน 10 นาที (ลดจาก 15 นาที)
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     
     // ตรวจสอบ jobs ที่มี updated_at
     const stuckJobs = await db.collection('cron_jobs')
       .find({ 
         status: 'running',
-        updated_at: { $lt: fifteenMinutesAgo }
+        updated_at: { $lt: tenMinutesAgo }
       })
       .toArray();
     
@@ -22,7 +22,7 @@ export async function GET() {
       .find({ 
         status: 'running',
         updated_at: { $exists: false },
-        created_at: { $lt: fifteenMinutesAgo }
+        created_at: { $lt: tenMinutesAgo }
       })
       .toArray();
     

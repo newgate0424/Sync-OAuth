@@ -14,6 +14,17 @@ function calculateChecksum(rows: any[][]): string {
   return crypto.createHash('md5').update(dataToHash).digest('hex');
 }
 
+// Helper to calculate checksum from components
+function calculateChecksumFromComponents(rowCount: number, firstRow: any[], middleRow: any[], lastRow: any[]): string {
+  const dataToHash = JSON.stringify({
+    rowCount,
+    firstRow,
+    lastRow,
+    middleRow
+  });
+  return crypto.createHash('md5').update(dataToHash).digest('hex');
+}
+
 export interface SyncParams {
   dataset: string;
   tableName: string;
@@ -157,52 +168,155 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
       }
     }
 
-    // ดึงข้อมูลจาก Google Sheets เต็มรูปแบบ
-    const range = `${config.sheet_name}!A${configStartRow}:ZZ`;
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.spreadsheet_id,
-      range: range,
-    });
-
-    const rows = response.data.values || [];
-    if (rows.length === 0) {
-      throw new Error('No data found in sheet');
+    // 🚀 SCALABILITY: Chunked Fetching & Streaming Insert
+    // รองรับข้อมูลขนาดใหญ่ (1M+ rows) โดยการดึงและ insert ทีละส่วน
+    
+    // 1. Get total row count first (if not already got)
+    let totalSheetRows = 0;
+    try {
+      const countResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.spreadsheet_id,
+        range: `${config.sheet_name}!A:A`,
+      });
+      totalSheetRows = (countResponse.data.values || []).length;
+    } catch (e) {
+      console.warn('[Sync Service] Failed to get total row count, will fetch until empty');
+      totalSheetRows = 10000000; // Fallback large number
     }
 
-    // แยก headers และ data rows ตาม has_header
-    const headers = configHasHeader ? rows[0] : rows[0]; // ใช้แถวแรกเป็น template
-    const dataRows = configHasHeader ? rows.slice(1) : rows;
+    console.log(`[Sync Service] Total sheet rows: ${totalSheetRows}`);
 
-    console.log(`[Sync Service] Processing ${dataRows.length} rows (has_header: ${configHasHeader})`);
-
+    // 2. Prepare for sync
     // นับจำนวนแถวเก่าเพื่อคำนวณ inserted/updated/deleted
     const oldCountResult = await pool.query(`SELECT COUNT(*) as count FROM "${tableName}"`);
     const oldRowCount = parseInt(oldCountResult.rows[0]?.count || 0);
 
-    // Simple sync logic - truncate และ insert ใหม่
+    // Truncate table once
     await pool.query(`TRUNCATE TABLE "${tableName}"`);
+
+    // 3. Chunk Loop
+    const CHUNK_SIZE = 2500; // Safe size for Google Sheets API
+    let processedRows = 0;
+    let headers: string[] = [];
+    let firstRowData: any[] = [];
+    let middleRowData: any[] = [];
+    let lastRowData: any[] = [];
     
-    let insertedCount = 0;
-    for (const row of dataRows) {
-      if (row.every((cell: any) => !cell)) continue;
-
-      const rowData: any = {};
-      headers.forEach((header: string, index: number) => {
-        rowData[header.toLowerCase().replace(/[^a-z0-9_]/g, '_')] = row[index] || null;
+    // Determine start row for data fetching
+    // Note: We need to fetch headers first if configHasHeader is true
+    let currentFetchRow = configStartRow;
+    
+    // If has header, fetch it first to establish schema
+    if (configHasHeader) {
+      const headerResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: config.spreadsheet_id,
+        range: `${config.sheet_name}!A${configStartRow}:ZZ${configStartRow}`,
       });
+      const headerRows = headerResponse.data.values || [];
+      if (headerRows.length > 0) {
+        headers = headerRows[0];
+        currentFetchRow++; // Move past header
+      } else {
+        throw new Error('Header row not found');
+      }
+    }
 
-      const columns = Object.keys(rowData).map(k => `"${k}"`).join(', ');
-      const placeholders = Object.keys(rowData).map((_, i) => `$${i + 1}`).join(', ');
-      const values = Object.values(rowData);
-
+    // Loop through data
+    while (true) {
+      // Calculate range for this chunk
+      // Google Sheets API is 1-based
+      const endRow = currentFetchRow + CHUNK_SIZE - 1;
+      const range = `${config.sheet_name}!A${currentFetchRow}:ZZ${endRow}`;
+      
+      console.log(`[Sync Service] Fetching chunk: ${range}`);
+      
       try {
-        await pool.query(
-          `INSERT INTO "${tableName}" (${columns}) VALUES (${placeholders})`,
-          values
-        );
-        insertedCount++;
-      } catch (err) {
-        console.error(`[Sync Service] Error inserting row:`, err);
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId: config.spreadsheet_id,
+          range: range,
+        });
+        
+        const rows = response.data.values || [];
+        
+        if (rows.length === 0) {
+          console.log('[Sync Service] No more data found, finishing sync');
+          break;
+        }
+
+        // If headers not set (no header mode), use first row of first chunk
+        if (headers.length === 0 && rows.length > 0) {
+          headers = rows[0]; // Use first row as template/headers
+          // Note: In no-header mode, first row is also data, so we don't skip it
+        }
+
+        // Capture rows for checksum
+        if (processedRows === 0 && rows.length > 0) {
+          firstRowData = rows[0];
+        }
+        
+        // Update last row
+        if (rows.length > 0) {
+          lastRowData = rows[rows.length - 1];
+        }
+        
+        // Capture middle row (approximate)
+        const currentTotal = processedRows + rows.length;
+        const targetMiddle = Math.floor(totalSheetRows / 2);
+        if (processedRows < targetMiddle && currentTotal >= targetMiddle) {
+           const middleIndex = targetMiddle - processedRows;
+           if (middleIndex >= 0 && middleIndex < rows.length) {
+             middleRowData = rows[middleIndex];
+           }
+        }
+
+        // Batch Insert
+        const values: any[] = [];
+        const placeholders: string[] = [];
+        
+        const batchHeaders = headers.map((h: string) => h.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+        const columns = batchHeaders.map((k: string) => `"${k}"`).join(', ');
+
+        rows.forEach((row) => {
+          if (row.every((cell: any) => !cell)) return; // Skip empty rows
+
+          const rowPlaceholders: string[] = [];
+          batchHeaders.forEach((_, colIndex) => {
+            const val = row[colIndex] || null;
+            values.push(val);
+            rowPlaceholders.push(`$${values.length}`);
+          });
+          placeholders.push(`(${rowPlaceholders.join(', ')})`);
+        });
+
+        if (placeholders.length > 0) {
+          const query = `INSERT INTO "${tableName}" (${columns}) VALUES ${placeholders.join(', ')}`;
+          await pool.query(query, values);
+          processedRows += rows.length;
+          console.log(`[Sync Service] Inserted chunk: ${rows.length} rows (Total: ${processedRows})`);
+        }
+
+        // Update progress in logs (every 10k rows)
+        if (logId && processedRows % 10000 === 0) {
+           await pool.query(
+            `UPDATE sync_logs SET rows_synced = $1 WHERE id = $2`,
+            [processedRows, logId]
+          );
+        }
+
+        // Move to next chunk
+        currentFetchRow += rows.length;
+        
+        // If we got fewer rows than requested, we reached the end
+        if (rows.length < CHUNK_SIZE) {
+          break;
+        }
+
+        // Rate limiting protection
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (err: any) {
+        console.error(`[Sync Service] Error processing chunk ${range}:`, err);
+        throw err;
       }
     }
 
@@ -211,17 +325,17 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     let finalUpdated = 0;
     let finalDeleted = 0;
     
-    if (dataRows.length > oldRowCount) {
+    if (processedRows > oldRowCount) {
       // มีแถวเพิ่มขึ้น = updated เก่า + inserted ใหม่
       finalUpdated = oldRowCount;
-      finalInserted = dataRows.length - oldRowCount;
-    } else if (dataRows.length < oldRowCount) {
+      finalInserted = processedRows - oldRowCount;
+    } else if (processedRows < oldRowCount) {
       // แถวลดลง = updated + deleted
-      finalUpdated = dataRows.length;
-      finalDeleted = oldRowCount - dataRows.length;
+      finalUpdated = processedRows;
+      finalDeleted = oldRowCount - processedRows;
     } else {
       // จำนวนเท่าเดิม = updated ทั้งหมด
-      finalUpdated = dataRows.length;
+      finalUpdated = processedRows;
     }
 
     // อัพเดท log - success
@@ -232,23 +346,23 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
          SET status = $1, completed_at = NOW(), sync_duration = $2, 
              rows_synced = $3, rows_inserted = $4, rows_updated = $5, rows_deleted = $6
          WHERE id = $7`,
-        ['success', duration, dataRows.length, finalInserted, finalUpdated, finalDeleted, logId]
+        ['success', duration, processedRows, finalInserted, finalUpdated, finalDeleted, logId]
       );
     }
 
     // คำนวณและบันทึก checksum สำหรับครั้งถัดไป
-    const newChecksum = calculateChecksum([
-      headers,
-      dataRows[0] || [],
-      dataRows[Math.floor(dataRows.length / 2)] || [],
-      dataRows[dataRows.length - 1] || []
-    ]);
+    const newChecksum = calculateChecksumFromComponents(
+      processedRows,
+      firstRowData,
+      middleRowData.length > 0 ? middleRowData : (firstRowData || []),
+      lastRowData
+    );
 
     await pool.query(
       `UPDATE sync_config 
        SET last_sync = NOW(), last_checksum = $1, last_row_count = $2 
        WHERE table_name = $3`,
-      [newChecksum, dataRows.length, tableName]
+      [newChecksum, processedRows, tableName]
     );
 
     console.log(`[Sync Service] ✓ Completed: ${finalInserted} inserted, ${finalUpdated} updated, ${finalDeleted} deleted`);
@@ -260,7 +374,7 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
         inserted: finalInserted,
         updated: finalUpdated,
         deleted: finalDeleted,
-        total: dataRows.length
+        total: processedRows
       }
     };
 
@@ -287,5 +401,33 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
       success: false,
       error: error.message
     };
+  }
+}
+
+/**
+ * Cleanup stuck sync logs in MySQL/Postgres
+ * Should be called on server startup
+ */
+export async function cleanupStuckSyncLogs() {
+  try {
+    const pool = await ensureDbInitialized();
+    console.log('[Sync Service] 🧹 Cleaning up stuck sync logs...');
+    
+    // Update logs that are 'running' and started more than 30 minutes ago
+    // (Giving generous buffer for long syncs)
+    const result = await pool.query(
+      `UPDATE sync_logs 
+       SET status = 'error', 
+           error_message = 'System cleanup: Job stuck in running state',
+           completed_at = NOW()
+       WHERE status = 'running' 
+       AND started_at < NOW() - INTERVAL '30 minutes'`
+    );
+    
+    if ((result.rowCount || 0) > 0) {
+      console.log(`[Sync Service] ✅ Cleared ${result.rowCount} stuck sync logs`);
+    }
+  } catch (error) {
+    console.error('[Sync Service] Failed to cleanup stuck logs:', error);
   }
 }
