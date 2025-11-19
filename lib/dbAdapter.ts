@@ -242,6 +242,105 @@ class DatabaseAdapter {
     }
   }
 
+  // Get table columns
+  async getTableColumns(tableName: string): Promise<string[]> {
+    if (this.type === 'postgresql') {
+      const result = await this.queryPostgreSQL(
+        `SELECT column_name 
+         FROM information_schema.columns 
+         WHERE table_name = $1`,
+        [tableName]
+      );
+      return result.rows.map(r => r.column_name);
+    } else {
+      const result = await this.queryMySQL(
+        `SELECT COLUMN_NAME 
+         FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() 
+         AND TABLE_NAME = ?`,
+        [tableName]
+      );
+      return result.rows.map(r => r.COLUMN_NAME);
+    }
+  }
+
+  /**
+   * Execute a function within a transaction.
+   * This provides a client-like object to the callback that ensures all queries
+   * run on the same connection.
+   */
+  async transaction<T>(callback: (client: DatabaseAdapter) => Promise<T>): Promise<T> {
+    if (this.type === 'postgresql') {
+      if (!this.pgPool) throw new Error('PostgreSQL pool not initialized');
+      const client = await this.pgPool.connect();
+      
+      // Create a proxy adapter that uses this specific client
+      const txAdapter = new DatabaseAdapter(this.customConnectionString);
+      // Manually inject the client into the proxy's query method
+      // We can't easily clone the full adapter state, so we'll just override the query method
+      // on a lightweight object that mimics DatabaseAdapter
+      
+      const txProxy = Object.create(this);
+      txProxy.query = async (sql: string, params?: any[]) => {
+        const result = await client.query(sql, params);
+        return {
+          rows: result.rows,
+          rowCount: result.rowCount || 0
+        };
+      };
+      // Override other methods that use query if necessary, but query is the main one.
+      // Helper methods like createInsertSQL don't use query, so they are fine on the prototype.
+      // Methods like getTableColumns DO use query, so they will use the overridden query.
+
+      try {
+        await client.query('BEGIN');
+        const result = await callback(txProxy);
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    } else {
+      if (!this.mysqlPool) throw new Error('MySQL pool not initialized');
+      const connection = await this.mysqlPool.getConnection();
+      
+      const txProxy = Object.create(this);
+      txProxy.query = async (sql: string, params?: any[]) => {
+        // MySQL specific query logic copied from queryMySQL but using 'connection'
+        let mysqlSql = sql;
+        if (params && params.length > 0) {
+          let paramIndex = 0;
+          mysqlSql = sql.replace(/\$\d+/g, () => {
+            paramIndex++;
+            return '?';
+          });
+        }
+        mysqlSql = mysqlSql.replace(/"([^"]+)"/g, '`$1`');
+        
+        const [rows] = await connection.execute(mysqlSql, params);
+        return {
+          rows: Array.isArray(rows) ? rows : [],
+          rowCount: Array.isArray(rows) ? rows.length : 0
+        };
+      };
+
+      try {
+        await connection.beginTransaction();
+        const result = await callback(txProxy);
+        await connection.commit();
+        return result;
+      } catch (e) {
+        await connection.rollback();
+        throw e;
+      } finally {
+        connection.release();
+      }
+    }
+  }
+
   async close() {
     if (this.pgPool) {
       await this.pgPool.end();

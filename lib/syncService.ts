@@ -1,6 +1,6 @@
 // Shared sync service - เรียกได้ทั้งจาก API route และ cron โดยตรง
 import { ensureDbInitialized } from './dbAdapter';
-import { getGoogleSheetsClient } from './googleSheets';
+import { getGoogleSheetsClient, getGoogleDriveClient } from './googleSheets';
 import crypto from 'crypto';
 
 function calculateChecksum(rows: any[][]): string {
@@ -50,6 +50,8 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
   const { dataset, tableName, forceSync = false } = params;
   const startTime = Date.now();
   let logId: number | null = null;
+  let tempTableName: string | null = null;
+  let quotedTempTableName: string | null = null;
 
   try {
     console.log(`[Sync Service] Starting sync for table: ${tableName}`);
@@ -83,7 +85,46 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     const configHasHeader = config.has_header !== undefined ? config.has_header : true;
     const dataStartRow = configHasHeader ? configStartRow + 1 : configStartRow;
 
-    // 🚀 OPTIMIZATION: ตรวจสอบ checksum ก่อนเพื่อประหยัด API quota
+    let driveModifiedTime: string | null = null;
+
+    // 🚀 OPTIMIZATION 1: Check Google Drive Modified Time (Zero Read Quota cost for Sheet)
+    if (!forceSync) {
+      try {
+        const drive = await getGoogleDriveClient();
+        if (drive) {
+          const fileMetadata = await drive.files.get({
+            fileId: config.spreadsheet_id,
+            fields: 'modifiedTime'
+          });
+          
+          driveModifiedTime = fileMetadata.data.modifiedTime || null;
+          const lastModifiedTime = config.last_modified_time;
+          
+          if (driveModifiedTime && lastModifiedTime && driveModifiedTime === lastModifiedTime) {
+             console.log(`[Sync Service] ✓ File not modified since last sync (${driveModifiedTime}), skipping.`);
+             
+             if (logId) {
+              await pool.query(
+                `UPDATE sync_logs 
+                 SET status = $1, completed_at = NOW(), sync_duration = 0, rows_synced = 0
+                 WHERE id = $2`,
+                ['skipped', logId]
+              );
+            }
+
+             return {
+               success: true,
+               message: 'Skipped: File not modified',
+               stats: { inserted: 0, updated: 0, deleted: 0, total: 0 }
+             };
+          }
+        }
+      } catch (err) {
+        console.warn('[Sync Service] Failed to check Drive metadata, falling back to checksum', err);
+      }
+    }
+
+    // 🚀 OPTIMIZATION 2: ตรวจสอบ checksum ก่อนเพื่อประหยัด API quota
     if (!forceSync) {
       try {
         console.log(`[Sync Service] Checking checksum for ${tableName}...`);
@@ -188,11 +229,33 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
 
     // 2. Prepare for sync
     // นับจำนวนแถวเก่าเพื่อคำนวณ inserted/updated/deleted
-    const oldCountResult = await pool.query(`SELECT COUNT(*) as count FROM "${tableName}"`);
+    // Use quoteIdentifier for table name
+    const quotedTableName = pool.quoteIdentifier(tableName);
+    const oldCountResult = await pool.query(`SELECT COUNT(*) as count FROM ${quotedTableName}`);
     const oldRowCount = parseInt(oldCountResult.rows[0]?.count || 0);
 
-    // Truncate table once
-    await pool.query(`TRUNCATE TABLE "${tableName}"`);
+    // Get existing table columns to filter out unwanted columns from Sheet
+    const tableColumns = await pool.getTableColumns(tableName);
+    console.log(`[Sync Service] Table ${tableName} has columns:`, tableColumns);
+
+    // 🚀 STRATEGY CHANGE: Sync to Temp Table -> Atomic Swap
+    // This prevents data loss if the sync fails mid-way.
+    tempTableName = `temp_${tableName}_${Date.now()}`;
+    quotedTempTableName = pool.quoteIdentifier(tempTableName);
+    
+    console.log(`[Sync Service] Creating temporary table: ${tempTableName}`);
+    
+    try {
+      if (pool.getDatabaseType() === 'postgresql') {
+          await pool.query(`CREATE TABLE ${quotedTempTableName} (LIKE ${quotedTableName} INCLUDING ALL)`);
+      } else {
+          await pool.query(`CREATE TABLE ${quotedTempTableName} LIKE ${quotedTableName}`);
+      }
+    } catch (createError) {
+      console.error(`[Sync Service] Failed to create temp table, falling back to direct truncate (unsafe):`, createError);
+      // Fallback to old method if temp table creation fails (e.g. permissions)
+      await pool.query(`TRUNCATE TABLE ${quotedTableName}`);
+    }
 
     // 3. Chunk Loop
     const CHUNK_SIZE = 2500; // Safe size for Google Sheets API
@@ -205,20 +268,94 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     // Determine start row for data fetching
     // Note: We need to fetch headers first if configHasHeader is true
     let currentFetchRow = configStartRow;
-    
+
+    // Helper to sanitize headers
+    const sanitizeHeader = (h: string) => {
+        if (!h) return '';
+        // 1. Trim whitespace
+        let s = h.trim().toLowerCase();
+        // 2. Replace spaces with _
+        s = s.replace(/\s+/g, '_');
+        // 3. Remove special chars (keep Thai and English)
+        // \u0E00-\u0E7F is Thai range
+        s = s.replace(/[^a-z0-9_\u0E00-\u0E7F]/g, '_');
+        // 4. Remove duplicate/leading/trailing underscores
+        s = s.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+        return s;
+    };
+
+    // Helper to count matches
+    const countMatches = (candidateHeaders: string[], dbColumns: string[]) => {
+        const sanitized = candidateHeaders.map(sanitizeHeader);
+        let matches = 0;
+        sanitized.forEach(h => {
+            if (dbColumns.includes(h)) matches++;
+        });
+        return matches;
+    };
+
     // If has header, fetch it first to establish schema
     if (configHasHeader) {
+      console.log(`[Sync Service] Fetching header from row ${configStartRow}...`);
       const headerResponse = await sheets.spreadsheets.values.get({
         spreadsheetId: config.spreadsheet_id,
         range: `${config.sheet_name}!A${configStartRow}:ZZ${configStartRow}`,
       });
       const headerRows = headerResponse.data.values || [];
+      
       if (headerRows.length > 0) {
         headers = headerRows[0];
+        
+        // 🔍 SMART HEADER DETECTION
+        // Check if current headers match any DB columns
+        let matchCount = countMatches(headers, tableColumns);
+        console.log(`[Sync Service] Header match count at row ${configStartRow}: ${matchCount}/${tableColumns.length}`);
+
+        // If no matches, try to find better header row
+        if (matchCount === 0) {
+             console.warn(`[Sync Service] ⚠️ No columns matched at row ${configStartRow}. Attempting auto-detection...`);
+             
+             // Try row - 1 (Common mistake: start_row=2 but header is at 1)
+             if (configStartRow > 1) {
+                 try {
+                    const prevRow = configStartRow - 1;
+                    const prevResponse = await sheets.spreadsheets.values.get({
+                        spreadsheetId: config.spreadsheet_id,
+                        range: `${config.sheet_name}!A${prevRow}:ZZ${prevRow}`,
+                    });
+                    const prevHeaders = prevResponse.data.values?.[0] || [];
+                    const prevMatchCount = countMatches(prevHeaders, tableColumns);
+                    
+                    if (prevMatchCount > 0) {
+                        console.log(`[Sync Service] ✅ Found better headers at row ${prevRow} (Matches: ${prevMatchCount}). Using this row.`);
+                        headers = prevHeaders;
+                        // Adjust fetch row: if header is at prevRow, data starts at prevRow + 1 = configStartRow
+                        // So currentFetchRow should be configStartRow
+                        // But wait, the logic below does currentFetchRow++
+                        // So we need to set currentFetchRow = prevRow
+                        currentFetchRow = prevRow; 
+                    }
+                 } catch (e) {
+                     console.warn('[Sync Service] Failed to check previous row:', e);
+                 }
+             }
+        }
+
+        console.log(`[Sync Service] Final headers for ${tableName}:`, headers);
+        
+        // Validate headers - check if they look like data (e.g. numbers)
+        const numericHeaders = headers.filter(h => !isNaN(Number(h)) && h.trim() !== '');
+        if (numericHeaders.length > headers.length / 2) {
+            console.warn(`[Sync Service] ⚠️ WARNING: Most headers look like numbers! Check 'start_row' config. Headers: ${JSON.stringify(headers)}`);
+        }
+
         currentFetchRow++; // Move past header
+        console.log(`[Sync Service] Data fetch will start from row ${currentFetchRow}`);
       } else {
         throw new Error('Header row not found');
       }
+    } else {
+        console.log(`[Sync Service] No header mode. Data fetch starts from row ${configStartRow}`);
     }
 
     // Loop through data
@@ -270,29 +407,56 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
         }
 
         // Batch Insert
-        const values: any[] = [];
-        const placeholders: string[] = [];
+        const batchHeaders = headers.map(sanitizeHeader);
+
+        // Filter headers to only include those that exist in the table
+        const validHeaderIndices: number[] = [];
+        const validHeaders: string[] = [];
         
-        const batchHeaders = headers.map((h: string) => h.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
-        const columns = batchHeaders.map((k: string) => `"${k}"`).join(', ');
+        batchHeaders.forEach((header, index) => {
+            if (tableColumns.includes(header)) {
+                validHeaderIndices.push(index);
+                validHeaders.push(header);
+            }
+        });
+        
+        if (validHeaders.length === 0) {
+            const errorMsg = `[Sync Service] ⛔ CRITICAL: No matching columns found between Sheet and Table! Aborting sync to prevent data loss. Sheet Headers: ${batchHeaders.join(', ')} | Table Columns: ${tableColumns.join(', ')}`;
+            console.error(errorMsg);
+            throw new Error(errorMsg);
+        }
 
+        // Use dbAdapter to generate correct SQL for the database type
+        // IMPORTANT: Insert into TEMP table
+        const targetInsertTable = tempTableName || tableName;
+        const { sql, paramCount } = pool.createInsertSQL(targetInsertTable, validHeaders, rows.length);
+        
+        // Flatten values for the query
+        const flatValues: any[] = [];
         rows.forEach((row) => {
-          if (row.every((cell: any) => !cell)) return; // Skip empty rows
-
-          const rowPlaceholders: string[] = [];
-          batchHeaders.forEach((_, colIndex) => {
-            const val = row[colIndex] || null;
-            values.push(val);
-            rowPlaceholders.push(`$${values.length}`);
-          });
-          placeholders.push(`(${rowPlaceholders.join(', ')})`);
+          // Note: We are not filtering empty rows here to match the batch size expected by createInsertSQL
+          // If we filter, we need to adjust the batch size passed to createInsertSQL
+          // But for simplicity, let's assume we insert all rows or filter before calling createInsertSQL
+          
+          // Actually, let's filter empty rows first
         });
 
-        if (placeholders.length > 0) {
-          const query = `INSERT INTO "${tableName}" (${columns}) VALUES ${placeholders.join(', ')}`;
-          await pool.query(query, values);
-          processedRows += rows.length;
-          console.log(`[Sync Service] Inserted chunk: ${rows.length} rows (Total: ${processedRows})`);
+        const validRows = rows.filter(row => !row.every((cell: any) => !cell));
+        
+        if (validRows.length > 0) {
+            // Re-generate SQL for valid rows count
+            const { sql: insertSql } = pool.createInsertSQL(targetInsertTable, validHeaders, validRows.length);
+            const insertValues: any[] = [];
+            
+            validRows.forEach(row => {
+                validHeaderIndices.forEach(colIndex => {
+                    insertValues.push(row[colIndex] || null);
+                });
+            });
+            
+            await pool.query(insertSql, insertValues);
+            processedRows += validRows.length;
+            console.log(`[Sync Service] Inserted chunk: ${validRows.length} rows (Total: ${processedRows})`);
         }
 
         // Update progress in logs (every 10k rows)
@@ -316,8 +480,53 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
 
       } catch (err: any) {
         console.error(`[Sync Service] Error processing chunk ${range}:`, err);
+        // If using temp table, we should clean it up in the main catch block
         throw err;
       }
+    }
+
+    // 4. Atomic Swap (if using temp table)
+    if (tempTableName) {
+        // 🛡️ SAFETY CHECK: Prevent accidental wipe
+        // If we processed 0 rows, but the sheet actually has data rows, something is wrong.
+        // We assume "data rows" exist if totalSheetRows > startRow
+        const expectedDataStartRow = configHasHeader ? configStartRow + 1 : configStartRow;
+        const sheetHasData = totalSheetRows > expectedDataStartRow;
+        
+        if (processedRows === 0 && oldRowCount > 0 && sheetHasData) {
+             const errorMsg = `[Sync Service] 🛡️ SAFETY ABORT: Sync processed 0 rows but Sheet appears to have data (${totalSheetRows} rows). Old table had ${oldRowCount} rows. Aborting swap to prevent data loss.`;
+             console.error(errorMsg);
+             
+             // Clean up temp table
+             await pool.query(`DROP TABLE IF EXISTS ${quotedTempTableName}`);
+             
+             throw new Error(errorMsg);
+        }
+
+        console.log(`[Sync Service] Swapping tables (Atomic Update)...`);
+        try {
+            await pool.transaction(async (tx) => {
+                if (pool.getDatabaseType() === 'postgresql') {
+                    // Postgres: Atomic Swap via Transaction
+                    await tx.query(`DROP TABLE IF EXISTS ${quotedTableName}`);
+                    await tx.query(`ALTER TABLE ${quotedTempTableName} RENAME TO ${quotedTableName}`);
+                } else {
+                    // MySQL: Atomic Swap via RENAME TABLE
+                    const backupTableName = `backup_${tableName}_${Date.now()}`;
+                    const quotedBackupTableName = pool.quoteIdentifier(backupTableName);
+                    
+                    // Atomic swap: Real -> Backup, Temp -> Real
+                    await tx.query(`RENAME TABLE ${quotedTableName} TO ${quotedBackupTableName}, ${quotedTempTableName} TO ${quotedTableName}`);
+                    
+                    // Drop backup
+                    await tx.query(`DROP TABLE ${quotedBackupTableName}`);
+                }
+            });
+            console.log(`[Sync Service] Table swap completed successfully.`);
+        } catch (swapError: any) {
+            console.error(`[Sync Service] Failed to swap tables:`, swapError);
+            throw new Error(`Failed to swap tables: ${swapError.message}`);
+        }
     }
 
     // คำนวณ inserted/updated/deleted เหมือน /api/sync-table
@@ -358,11 +567,27 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
       lastRowData
     );
 
+    // If we didn't get modified time yet (e.g. forceSync or check failed), try to get it now for next time
+    if (!driveModifiedTime) {
+      try {
+        const drive = await getGoogleDriveClient();
+        if (drive) {
+           const fileMetadata = await drive.files.get({
+            fileId: config.spreadsheet_id,
+            fields: 'modifiedTime'
+          });
+          driveModifiedTime = fileMetadata.data.modifiedTime || null;
+        }
+      } catch (e) {
+        // Ignore error here
+      }
+    }
+
     await pool.query(
       `UPDATE sync_config 
-       SET last_sync = NOW(), last_checksum = $1, last_row_count = $2 
-       WHERE table_name = $3`,
-      [newChecksum, processedRows, tableName]
+       SET last_sync = NOW(), last_checksum = $1, last_row_count = $2, last_modified_time = $3
+       WHERE table_name = $4`,
+      [newChecksum, processedRows, driveModifiedTime, tableName]
     );
 
     console.log(`[Sync Service] ✓ Completed: ${finalInserted} inserted, ${finalUpdated} updated, ${finalDeleted} deleted`);
@@ -380,6 +605,17 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
 
   } catch (error: any) {
     console.error('[Sync Service] Error:', error);
+
+    // Cleanup temp table if it exists (on error)
+    if (tempTableName && quotedTempTableName) {
+        try {
+            const pool = await ensureDbInitialized();
+            console.log(`[Sync Service] 🧹 Cleaning up temp table ${tempTableName} after error...`);
+            await pool.query(`DROP TABLE IF EXISTS ${quotedTempTableName}`);
+        } catch (cleanupError) {
+            console.error(`[Sync Service] Failed to cleanup temp table ${tempTableName}:`, cleanupError);
+        }
+    }
 
     // อัพเดท log - error
     if (logId) {
@@ -427,6 +663,35 @@ export async function cleanupStuckSyncLogs() {
     if ((result.rowCount || 0) > 0) {
       console.log(`[Sync Service] ✅ Cleared ${result.rowCount} stuck sync logs`);
     }
+
+    // Cleanup old temp tables (older than 1 hour)
+    // This prevents accumulation of temp tables if syncs crash hard
+    try {
+        const tables = await pool.query(
+            pool.getDatabaseType() === 'postgresql' 
+            ? `SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'temp_%'`
+            : `SELECT TABLE_NAME as table_name FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'temp_%'`
+        );
+        
+        const now = Date.now();
+        const ONE_HOUR = 60 * 60 * 1000;
+        
+        for (const row of tables.rows) {
+            const tableName = row.table_name;
+            // Extract timestamp from temp_TABLE_TIMESTAMP
+            const parts = tableName.split('_');
+            const timestampStr = parts[parts.length - 1];
+            const timestamp = parseInt(timestampStr);
+            
+            if (!isNaN(timestamp) && (now - timestamp > ONE_HOUR)) {
+                console.log(`[Sync Service] 🗑️ Dropping old temp table: ${tableName}`);
+                await pool.query(`DROP TABLE IF EXISTS ${pool.quoteIdentifier(tableName)}`);
+            }
+        }
+    } catch (cleanupError) {
+        console.warn('[Sync Service] Failed to cleanup temp tables:', cleanupError);
+    }
+
   } catch (error) {
     console.error('[Sync Service] Failed to cleanup stuck logs:', error);
   }

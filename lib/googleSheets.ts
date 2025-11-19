@@ -83,6 +83,60 @@ export async function getGoogleSheetsClient() {
   return sheets;
 }
 
+export async function getGoogleDriveClient() {
+  try {
+    // Try to use OAuth first
+    const { getMongoDb } = await import('./mongoDb');
+    const db = await getMongoDb();
+    const tokenDoc = await db.collection('oauth_tokens').findOne({ provider: 'google' });
+
+    if (tokenDoc) {
+      const oauth2Client = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_REDIRECT_URI
+      );
+
+      oauth2Client.setCredentials(tokenDoc.tokens);
+
+      // Handle token refresh if needed
+      oauth2Client.on('tokens', async (tokens) => {
+        await db.collection('oauth_tokens').updateOne(
+          { provider: 'google' },
+          { 
+            $set: { 
+              tokens: { ...tokenDoc.tokens, ...tokens },
+              updatedAt: new Date()
+            } 
+          }
+        );
+      });
+
+      const drive = google.drive({ version: 'v3', auth: oauth2Client });
+      return drive;
+    }
+  } catch (error) {
+    console.warn('⚠️  OAuth authentication not available for Drive, falling back to Service Account');
+  }
+
+  // Fallback: Use Service Account
+  const credentialsPath = path.join(process.cwd(), 'credentials.json');
+  
+  if (!fs.existsSync(credentialsPath)) {
+    throw new Error('Google Drive authentication not configured');
+  }
+  
+  const auth = new google.auth.GoogleAuth({
+    keyFile: credentialsPath,
+    scopes: SCOPES,
+  });
+
+  const client = await auth.getClient();
+  const drive = google.drive({ version: 'v3', auth: client as any });
+  
+  return drive;
+}
+
 export function extractSpreadsheetId(url: string): string | null {
   const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   return match ? match[1] : null;

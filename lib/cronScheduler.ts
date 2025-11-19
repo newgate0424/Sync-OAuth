@@ -338,6 +338,21 @@ export async function initializeCronJobs() {
       activeCronJobs.set('system-cleanup', cleanupTask);
     }
 
+    // 💾 SYSTEM BACKUP: Daily backup at 2:00 AM
+    if (!activeCronJobs.has('system-backup')) {
+      console.log('[Cron] 💾 Starting system backup task (Daily at 2:00 AM)...');
+      const backupTask = cron.schedule('0 2 * * *', async () => {
+        try {
+          const { performBackup } = await import('./backupService');
+          console.log('[Cron] 💾 Starting scheduled backup...');
+          await performBackup();
+        } catch (err) {
+          console.error('[Cron] Backup error:', err);
+        }
+      });
+      activeCronJobs.set('system-backup', backupTask);
+    }
+
     const jobs = await db.collection('cron_jobs').find({ enabled: true }).toArray() as CronJob[];
     
     console.log(`[Cron] Initializing ${jobs.length} cron jobs...`);
