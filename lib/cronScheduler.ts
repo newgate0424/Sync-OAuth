@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { getMongoDb } from './mongoDb';
 import { performSync } from './syncService';
+import { performQueryJob } from './queryService';
 
 interface CronJob {
   _id: any;
@@ -12,6 +13,9 @@ interface CronJob {
   startTime?: string;
   endTime?: string;
   enabled: boolean;
+  type?: 'sync' | 'query';
+  queryId?: string;
+  sql?: string;
 }
 
 // Use global to persist across HMR (Hot Module Reload)
@@ -66,22 +70,33 @@ async function executeSyncJob(job: CronJob) {
     });
     logId = logResult.insertedId;
     
-    // เรียก sync service โดยตรง (ไม่ใช้ HTTP fetch)
-    console.log(`[Cron] 🔧 Calling sync service directly for table: ${job.table}`);
-    
     // สร้าง timeout promise
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('Job timeout after 10 minutes')), TIMEOUT_MS)
     );
     
-    const syncPromise = performSync({
-      dataset: process.env.DATABASE_NAME || 'sheets_sync',
-      tableName: job.table,
-      forceSync: false
-    });
-    
-    // Race between sync and timeout
-    const result = await Promise.race([syncPromise, timeoutPromise]) as Awaited<ReturnType<typeof performSync>>;
+    let result: any;
+
+    if (job.type === 'query' && job.sql) {
+       console.log(`[Cron] 🔍 Executing query job: ${job.name}`);
+       const queryPromise = performQueryJob({
+         sql: job.sql,
+         destinationTable: job.table !== 'query_result' ? job.table : undefined
+       });
+       result = await Promise.race([queryPromise, timeoutPromise]);
+    } else {
+        // เรียก sync service โดยตรง (ไม่ใช้ HTTP fetch)
+        console.log(`[Cron] 🔧 Calling sync service directly for table: ${job.table}`);
+        
+        const syncPromise = performSync({
+          dataset: process.env.DATABASE_NAME || 'sheets_sync',
+          tableName: job.table,
+          forceSync: false
+        });
+        
+        // Race between sync and timeout
+        result = await Promise.race([syncPromise, timeoutPromise]);
+    }
     
     console.log(`[Cron] Sync result for ${job.name}:`, result);
     
@@ -99,8 +114,8 @@ async function executeSyncJob(job: CronJob) {
             status: 'success',
             completed_at: endTime,
             duration_ms: duration,
-            message: `Job completed successfully`,
-            result: result.stats,
+            message: result.message || 'Job completed successfully',
+            result: result.stats || result,
             updated_at: endTime
           }
         }

@@ -68,26 +68,41 @@ export async function GET() {
           LIMIT 1
         `;
         const syncLogResult = await pool.query(syncLogQuery, [tableName]);
-        const rowCount = syncLogResult.rows.length > 0 
+        let rowCount = syncLogResult.rows.length > 0 
           ? parseInt(syncLogResult.rows[0].rows_synced || 0)
           : 0;
         
-        // Get table size
+        // Get table size and fallback row count
         let tableSize = 0;
         if (dbType === 'mysql') {
           const sizeResult = await pool.query(`
             SELECT 
+              table_rows,
               data_length + index_length as size
             FROM information_schema.TABLES
             WHERE table_schema = DATABASE()
             AND table_name = ?
           `, [tableName]);
+          
           tableSize = parseInt(sizeResult.rows[0]?.size || 0);
+          
+          // ถ้าไม่มีข้อมูลใน sync_logs ให้ใช้ค่าจาก information_schema (ค่าประมาณ)
+          if (rowCount === 0) {
+            rowCount = parseInt(sizeResult.rows[0]?.table_rows || 0);
+          }
         } else {
           const sizeResult = await pool.query(`
             SELECT pg_total_relation_size($1) as size
           `, [tableName]);
           tableSize = parseInt(sizeResult.rows[0].size);
+          
+          // Fallback for Postgres
+          if (rowCount === 0) {
+             const countResult = await pool.query(`
+               SELECT reltuples::bigint AS estimate FROM pg_class WHERE relname = $1
+             `, [tableName]);
+             rowCount = parseInt(countResult.rows[0]?.estimate || 0);
+          }
         }
         
         return {

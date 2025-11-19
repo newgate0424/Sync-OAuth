@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Database, FileText, Home, Settings, X, Clock, LayoutDashboard } from 'lucide-react';
+import { Database, FileText, Home, Settings, X, Clock, LayoutDashboard, HardDrive, Terminal } from 'lucide-react';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -14,6 +14,8 @@ const menuItems = [
   { icon: Home, label: 'หน้าหลัก', href: '/' },
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
   { icon: Database, label: 'Database', href: '/database' },
+  { icon: Terminal, label: 'SQL Query', href: '/query' },
+  { icon: HardDrive, label: 'Backup', href: '/backup' },
   { icon: Clock, label: 'Cron Jobs', href: '/cron' },
   { icon: FileText, label: 'Logs', href: '/log' },
   { icon: Settings, label: 'ตั้งค่า', href: '/settings' },

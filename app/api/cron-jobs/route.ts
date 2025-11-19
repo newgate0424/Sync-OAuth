@@ -44,20 +44,61 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const db = await getMongoDb();
-    const { name, folder, table, schedule, customSchedule, startTime, endTime } = await request.json();
+    const { name, folder, table, schedule, customSchedule, startTime, endTime, type, queryId, sql } = await request.json();
     
-    if (!name || !folder || !table || !schedule) {
+    if (!name || !schedule) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
     
+    // If queryId is provided, check if a job already exists
+    if (queryId) {
+      const existingJob = await db.collection('cron_jobs').findOne({ queryId });
+      if (existingJob) {
+        // Update existing job
+        await db.collection('cron_jobs').updateOne(
+          { _id: existingJob._id },
+          { 
+            $set: {
+              name,
+              folder: folder || 'system',
+              table: table || 'query_result',
+              schedule,
+              customSchedule: customSchedule || null,
+              startTime: startTime || null,
+              endTime: endTime || null,
+              type: type || 'sync',
+              sql: sql || null,
+              updated_at: new Date()
+            }
+          }
+        );
+        
+        // Reload cron scheduler
+        try {
+          const { reloadCronJobs } = await import('@/lib/cronScheduler');
+          await reloadCronJobs();
+        } catch (error) {
+          console.log('Cron scheduler not available in development mode');
+        }
+
+        return NextResponse.json({ 
+          success: true, 
+          job: { ...existingJob, id: existingJob._id.toString(), updated: true }
+        });
+      }
+    }
+
     const newJob = {
       name,
-      folder,
-      table,
+      folder: folder || 'system',
+      table: table || 'query_result',
       schedule,
       customSchedule: customSchedule || null,
       startTime: startTime || null,
       endTime: endTime || null,
+      type: type || 'sync',
+      queryId: queryId || null,
+      sql: sql || null,
       enabled: true,
       status: 'pending',
       lastRun: null,
@@ -90,7 +131,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const db = await getMongoDb();
-    const { jobId, name, folder, table, schedule, customSchedule, startTime, endTime, enabled } = await request.json();
+    const { jobId, name, folder, table, schedule, customSchedule, startTime, endTime, enabled, type, queryId, sql } = await request.json();
     
     if (!jobId) {
       return NextResponse.json({ error: 'Job ID is required' }, { status: 400 });
@@ -100,28 +141,19 @@ export async function PUT(request: NextRequest) {
       updated_at: new Date()
     };
     
-    if (name !== undefined) updateData.name = name;
-    if (folder !== undefined) updateData.folder = folder;
-    if (table !== undefined) updateData.table = table;
-    if (schedule !== undefined) updateData.schedule = schedule;
+    if (name) updateData.name = name;
+    if (folder) updateData.folder = folder;
+    if (table) updateData.table = table;
+    if (schedule) updateData.schedule = schedule;
     if (customSchedule !== undefined) updateData.customSchedule = customSchedule;
     if (startTime !== undefined) updateData.startTime = startTime;
     if (endTime !== undefined) updateData.endTime = endTime;
-    if (enabled !== undefined) {
-      updateData.enabled = enabled;
-      
-      // ถ้า disable job ที่กำลังรันอยู่ ให้ force stop
-      if (enabled === false) {
-        const currentJob = await db.collection('cron_jobs').findOne({ _id: new ObjectId(jobId) });
-        if (currentJob?.status === 'running') {
-          console.log(`[API] Force stopping running job: ${currentJob.name}`);
-          updateData.status = 'failed';
-          updateData.nextRun = null;
-        }
-      }
-    }
+    if (enabled !== undefined) updateData.enabled = enabled;
+    if (type) updateData.type = type;
+    if (queryId) updateData.queryId = queryId;
+    if (sql) updateData.sql = sql;
     
-    await db.collection('cron_jobs').updateOne(
+    const result = await db.collection('cron_jobs').updateOne(
       { _id: new ObjectId(jobId) },
       { $set: updateData }
     );
@@ -145,21 +177,33 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const db = await getMongoDb();
-    const { jobId } = await request.json();
+    const { jobId, queryId } = await request.json();
     
-    if (!jobId) {
-      return NextResponse.json({ error: 'Job ID is required' }, { status: 400 });
+    if (!jobId && !queryId) {
+      return NextResponse.json({ error: 'Job ID or Query ID is required' }, { status: 400 });
     }
     
-    await db.collection('cron_jobs').deleteOne({ _id: new ObjectId(jobId) });
+    let filter = {};
+    if (jobId) {
+        filter = { _id: new ObjectId(jobId) };
+    } else if (queryId) {
+        filter = { queryId: queryId };
+    }
+
+    // Find job first to get ID for stopping
+    const job = await db.collection('cron_jobs').findOne(filter);
     
-    // Stop and reload cron scheduler
-    try {
-      const { stopCronJob, reloadCronJobs } = await import('@/lib/cronScheduler');
-      stopCronJob(jobId);
-      await reloadCronJobs();
-    } catch (error) {
-      console.log('Cron scheduler not available in development mode');
+    if (job) {
+        await db.collection('cron_jobs').deleteOne({ _id: job._id });
+        
+        // Stop and reload cron scheduler
+        try {
+          const { stopCronJob, reloadCronJobs } = await import('@/lib/cronScheduler');
+          stopCronJob(job._id.toString());
+          await reloadCronJobs();
+        } catch (error) {
+          console.log('Cron scheduler not available in development mode');
+        }
     }
     
     return NextResponse.json({ success: true });

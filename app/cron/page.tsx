@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Clock, Play, Pause, Trash2, Plus, Settings, RefreshCw, Database, Table2, Calendar, AlertCircle, FileText, CheckCircle2, XCircle } from 'lucide-react';
+import { Clock, Play, Pause, Trash2, Plus, Settings, RefreshCw, Database, Table2, Calendar, AlertCircle } from 'lucide-react';
 
 interface CronJob {
   id: number | string;
@@ -15,32 +15,17 @@ interface CronJob {
   status?: 'success' | 'failed' | 'running';
 }
 
-interface CronLog {
-  id: string;
-  job_id: string;
-  job_name: string;
-  folder: string;
-  table: string;
-  schedule: string;
-  status: 'success' | 'failed' | 'running';
-  started_at: string;
-  completed_at?: string;
-  duration_ms?: number;
-  message: string;
-  error?: string;
-  result?: any;
-}
+
 
 export default function CronPage() {
   const [mounted, setMounted] = useState(false);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
-  const [cronLogs, setCronLogs] = useState<CronLog[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [refreshingLogs, setRefreshingLogs] = useState(false);
+
   const [showDialog, setShowDialog] = useState(false);
-  const [showLogs, setShowLogs] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
   const [formData, setFormData] = useState({
     name: '',
@@ -68,7 +53,6 @@ export default function CronPage() {
         await loadCronJobs();
         await loadFolders();
         await loadDatasets();
-        await loadCronLogs();
       } catch (error) {
         console.error('Error initializing data:', error);
       }
@@ -79,7 +63,6 @@ export default function CronPage() {
     // Auto-refresh logs และ clear stuck jobs ทุก 5 วินาที
     const interval = setInterval(async () => {
       await fetch('/api/cron-jobs/auto-clear');
-      loadCronLogs();
       loadCronJobs();
     }, 5000);
     
@@ -109,27 +92,7 @@ export default function CronPage() {
     }
   };
 
-  const loadCronLogs = async (jobId?: string, showRefresh = false) => {
-    try {
-      if (showRefresh) setRefreshingLogs(true);
-      const url = jobId
-        ? `/api/cron-logs?jobId=${jobId}&limit=50`
-        : '/api/cron-logs?limit=100';
-      const response = await fetch(url, {
-        headers: { 'Cache-Control': 'no-cache' },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setCronLogs(data.logs || []);
-      }
-    } catch (error) {
-      console.error('Error loading cron logs:', error);
-    } finally {
-      if (showRefresh) {
-        setTimeout(() => setRefreshingLogs(false), 500);
-      }
-    }
-  };
+
 
   const loadFolders = async () => {
     try {
@@ -487,22 +450,7 @@ export default function CronPage() {
                       <Play className="w-4 h-4 text-gray-600" />
                     )}
                   </button>
-                  <button
-                    onClick={() => {
-                      setSelectedJobId(job.id.toString());
-                      loadCronLogs(job.id.toString());
-                      // Scroll to logs section
-                      setTimeout(() => {
-                        document.querySelector('.bg-white.rounded-lg.shadow-md.p-6.mt-8')?.scrollIntoView({ 
-                          behavior: 'smooth' 
-                        });
-                      }, 100);
-                    }}
-                    className="p-2 hover:bg-gray-100 rounded-lg"
-                    title="View logs"
-                  >
-                    <FileText className="w-4 h-4 text-gray-600" />
-                  </button>
+
                   <button
                     onClick={() => handleEditJob(job)}
                     className="p-2 hover:bg-gray-100 rounded-lg"
@@ -679,143 +627,6 @@ export default function CronPage() {
           </div>
         </div>
       )}
-
-      {/* Cron Logs Section */}
-      <div className="bg-white rounded-lg shadow-md p-6 mt-8">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <FileText className="w-6 h-6 text-gray-700" />
-            <h2 className="text-xl font-bold text-gray-900">Cron Job Logs</h2>
-            <span className="text-sm text-gray-500">({cronLogs.length} logs)</span>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => {
-                setSelectedJobId(null);
-                loadCronLogs(undefined, false);
-              }}
-              className="px-3 py-1 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
-            >
-              All Jobs
-            </button>
-            <button
-              onClick={() => loadCronLogs(selectedJobId || undefined, true)}
-              disabled={refreshingLogs}
-              className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-1"
-            >
-              <RefreshCw className={`w-4 h-4 ${refreshingLogs ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
-        </div>
-
-        {/* Filter by Job */}
-        <div className="mb-4">
-          <select
-            value={selectedJobId || ''}
-            onChange={(e) => {
-              const jobId = e.target.value || null;
-              setSelectedJobId(jobId);
-              loadCronLogs(jobId || undefined);
-            }}
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All Jobs</option>
-            {cronJobs.map(job => (
-              <option key={job.id} value={job.id}>
-                {job.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Logs Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b-2 border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Job</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Started</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Duration</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Message</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {cronLogs.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
-                    No logs found
-                  </td>
-                </tr>
-              ) : (
-                cronLogs.map(log => (
-                  <tr key={log.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      {log.status === 'success' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Success
-                        </span>
-                      )}
-                      {log.status === 'failed' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-medium">
-                          <XCircle className="w-3 h-3" />
-                          Failed
-                        </span>
-                      )}
-                      {log.status === 'running' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                          Running
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div>
-                        <div className="font-medium text-gray-900">{log.job_name}</div>
-                        <div className="text-xs text-gray-500">{log.folder} / {log.table}</div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-sm text-gray-900">
-                        {new Date(log.started_at).toLocaleString('th-TH', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        })}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {log.duration_ms !== undefined ? (
-                        <span className="text-sm text-gray-600">
-                          {log.duration_ms < 1000 
-                            ? `${log.duration_ms}ms`
-                            : `${(log.duration_ms / 1000).toFixed(2)}s`
-                          }
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-sm text-gray-900">{log.message}</div>
-                      {log.error && (
-                        <div className="text-xs text-red-600 mt-1 font-mono bg-red-50 p-1 rounded">
-                          {log.error}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </>
   );
 }

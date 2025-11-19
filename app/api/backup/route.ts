@@ -158,9 +158,17 @@ export async function POST(request: NextRequest) {
       const mongoDb = await getMongoDb();
       const folders = await mongoDb.collection('folders').find({}).toArray();
       const folderTables = await mongoDb.collection('folder_tables').find({}).toArray();
+      const settings = await mongoDb.collection('settings').find({}).toArray();
+      const cronJobs = await mongoDb.collection('cron_jobs').find({}).toArray();
+      const users = await mongoDb.collection('users').find({}).toArray();
+      const savedQueries = await mongoDb.collection('saved_queries').find({}).toArray();
       
       console.log(`📁 Found ${folders.length} folders in MongoDB`);
       console.log(`📋 Found ${folderTables.length} table definitions in MongoDB`);
+      console.log(`⚙️ Found ${settings.length} settings in MongoDB`);
+      console.log(`⏰ Found ${cronJobs.length} cron jobs in MongoDB`);
+      console.log(`bust_in_silhouette Found ${users.length} users in MongoDB`);
+      console.log(`💾 Found ${savedQueries.length} saved queries in MongoDB`);
 
       if (folders.length > 0) {
         mongoData.push({
@@ -174,6 +182,38 @@ export async function POST(request: NextRequest) {
         mongoData.push({
           tableName: 'folder_tables',
           rows: folderTables,
+          schema: { type: 'mongodb_collection' }
+        });
+      }
+
+      if (settings.length > 0) {
+        mongoData.push({
+          tableName: 'settings',
+          rows: settings,
+          schema: { type: 'mongodb_collection' }
+        });
+      }
+
+      if (cronJobs.length > 0) {
+        mongoData.push({
+          tableName: 'cron_jobs',
+          rows: cronJobs,
+          schema: { type: 'mongodb_collection' }
+        });
+      }
+
+      if (users.length > 0) {
+        mongoData.push({
+          tableName: 'users',
+          rows: users,
+          schema: { type: 'mongodb_collection' }
+        });
+      }
+
+      if (savedQueries.length > 0) {
+        mongoData.push({
+          tableName: 'saved_queries',
+          rows: savedQueries,
           schema: { type: 'mongodb_collection' }
         });
       }
@@ -194,7 +234,7 @@ export async function POST(request: NextRequest) {
     const allSqlTables = tablesResult.rows.map((r: any) => r.table_name);
     
     // Filter out system tables that might be in SQL
-    const sqlTablesToBackup = allSqlTables.filter((t: string) => !['folders', 'folder_tables', 'database_backups', 'backup_tables'].includes(t));
+    const sqlTablesToBackup = allSqlTables.filter((t: string) => !['folders', 'folder_tables', 'settings', 'cron_jobs', 'users', 'saved_queries', 'database_backups', 'backup_tables'].includes(t));
 
     console.log(`📊 Found ${sqlTablesToBackup.length} user tables in SQL: ${sqlTablesToBackup.join(', ')}`);
 
