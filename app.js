@@ -75,22 +75,7 @@ app.prepare()
   .then(() => {
     console.log('Next.js prepared successfully');
     
-    // Initialize cron jobs after Next.js is ready
-    if (!dev) {
-      try {
-        console.log('Initializing cron scheduler...');
-        const { initializeCronJobs } = require('./lib/cronScheduler');
-        initializeCronJobs().then(() => {
-          console.log('Cron scheduler initialized');
-        }).catch(err => {
-          console.error('Failed to initialize cron scheduler:', err.message);
-          // Don't exit, cron is optional
-        });
-      } catch (error) {
-        console.error('Cron scheduler not available:', error.message);
-        // Continue without cron
-      }
-    }
+
     
     const server = createServer(async (req, res) => {
       try {

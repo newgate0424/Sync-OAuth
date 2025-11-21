@@ -15,18 +15,6 @@ async function createIndexes() {
     
     const db = client.db(MONGODB_DB);
     
-    // Create indexes for cron_jobs collection
-    console.log('Creating indexes for cron_jobs...');
-    await db.collection('cron_jobs').createIndex({ enabled: 1, status: 1 });
-    await db.collection('cron_jobs').createIndex({ status: 1 });
-    await db.collection('cron_jobs').createIndex({ nextRun: 1 });
-    
-    // Create indexes for cron_logs collection
-    console.log('Creating indexes for cron_logs...');
-    await db.collection('cron_logs').createIndex({ job_id: 1, created_at: -1 });
-    await db.collection('cron_logs').createIndex({ created_at: -1 });
-    await db.collection('cron_logs').createIndex({ status: 1 });
-    
     // Create indexes for folders collection
     console.log('Creating indexes for folders...');
     await db.collection('folders').createIndex({ name: 1 }, { unique: true });

@@ -43,7 +43,6 @@
 - [x] Google Sheets Integration
 - [x] MySQL/PostgreSQL Support
 - [x] Checksum-based Sync
-- [x] Cron Job Scheduler
 - [x] Manual Sync Trigger
 - [x] Folder Management
 - [x] Multi-table Support
@@ -58,7 +57,6 @@
 
 ### Monitoring Features ✅
 - [x] Real-time Sync Logs (2s refresh)
-- [x] Dashboard Stats (5s refresh)
 - [x] Database View (10s refresh)
 - [x] Inserted/Updated/Deleted Counts
 - [x] Error Messages
@@ -68,8 +66,6 @@
 - [x] Plesk Passenger Compatibility
 - [x] Direct Function Calls (no HTTP)
 - [x] Auto-migration
-- [x] Timeout Protection (10 min)
-- [x] Stuck Job Cleanup (>15 min)
 - [x] Environment Variables Support
 
 ---
@@ -213,13 +209,9 @@ const pool = mysql.createPool({
 
 ### Monitoring Setup ✅
 - Real-time log updates (2s)
-- Dashboard auto-refresh (5s)
 - Database view refresh (10s)
-- Cron job status tracking
 
 ### Error Handling ✅
-- Timeout protection (10 min)
-- Auto-clear stuck jobs (>15 min)
 - Comprehensive error logging
 - Transaction rollback on failure
 

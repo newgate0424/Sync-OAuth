@@ -140,14 +140,12 @@ export async function performBackup() {
       const folders = await mongoDb.collection('folders').find({}).toArray();
       const folderTables = await mongoDb.collection('folder_tables').find({}).toArray();
       const settings = await mongoDb.collection('settings').find({}).toArray();
-      const cronJobs = await mongoDb.collection('cron_jobs').find({}).toArray();
       const users = await mongoDb.collection('users').find({}).toArray();
       const savedQueries = await mongoDb.collection('saved_queries').find({}).toArray();
       
       if (folders.length > 0) mongoData.push({ tableName: 'folders', rows: folders, schema: { type: 'mongodb_collection' } });
       if (folderTables.length > 0) mongoData.push({ tableName: 'folder_tables', rows: folderTables, schema: { type: 'mongodb_collection' } });
       if (settings.length > 0) mongoData.push({ tableName: 'settings', rows: settings, schema: { type: 'mongodb_collection' } });
-      if (cronJobs.length > 0) mongoData.push({ tableName: 'cron_jobs', rows: cronJobs, schema: { type: 'mongodb_collection' } });
       if (users.length > 0) mongoData.push({ tableName: 'users', rows: users, schema: { type: 'mongodb_collection' } });
       if (savedQueries.length > 0) mongoData.push({ tableName: 'saved_queries', rows: savedQueries, schema: { type: 'mongodb_collection' } });
     } catch (error: any) {

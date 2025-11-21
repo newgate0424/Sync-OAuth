@@ -14,6 +14,7 @@
     "@types/node-cron": "^3.0.11",
     "bcrypt": "^6.0.0",
     "cron-time-generator": "^2.0.3",
+    "csv-parse": "^6.1.0",
     "dotenv": "^16.3.1",
     "googleapis": "^166.0.0",
     "lucide-react": "^0.292.0",

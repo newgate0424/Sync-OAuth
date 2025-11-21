@@ -47,6 +47,8 @@ class DatabaseAdapter {
     if (!this.connectionString) {
       console.warn('⚠️  DATABASE_URL not set. Using in-memory mode (data will not persist).');
       console.warn('📋 Please configure DATABASE_URL in .env file for persistent storage.');
+    } else {
+      console.log(`[DatabaseAdapter] Initialized with: ${this.connectionString.replace(/:[^:@]+@/, ':****@')}`);
     }
     
     this.type = this.detectDatabaseType();
@@ -83,7 +85,18 @@ class DatabaseAdapter {
         connectionString,
         ssl: connectionString?.includes('127.0.0.1') || connectionString?.includes('localhost')
           ? false
-          : { rejectUnauthorized: false }
+          : { rejectUnauthorized: false },
+        // Pool Configuration
+        max: 20, // Max number of clients in the pool
+        idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+        connectionTimeoutMillis: 10000, // Return an error after 10 seconds if connection could not be established
+        allowExitOnIdle: false,
+      });
+      
+      // Error handling for the pool
+      this.pgPool.on('error', (err, client) => {
+        console.error('Unexpected error on idle client', err);
+        // Don't exit the process, just log it
       });
     } else {
       // Parse MySQL connection string
@@ -98,7 +111,8 @@ class DatabaseAdapter {
           password: decodeURIComponent(url.password),
           database: url.pathname.slice(1),
           waitForConnections: true,
-          connectionLimit: 10
+          connectionLimit: 10,
+          connectTimeout: 20000, // 20 seconds
           // SSL disabled by default
         });
       } catch (error) {
@@ -109,10 +123,25 @@ class DatabaseAdapter {
   }
 
   async query(sql: string, params?: any[]): Promise<QueryResult> {
-    if (this.type === 'postgresql') {
-      return this.queryPostgreSQL(sql, params);
-    } else {
-      return this.queryMySQL(sql, params);
+    try {
+      if (this.type === 'postgresql') {
+        return await this.queryPostgreSQL(sql, params);
+      } else {
+        return await this.queryMySQL(sql, params);
+      }
+    } catch (error: any) {
+      // Retry logic for connection errors
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === '57P01') {
+        console.warn(`[Database] Connection error (${error.code}), retrying query...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+        
+        if (this.type === 'postgresql') {
+          return await this.queryPostgreSQL(sql, params);
+        } else {
+          return await this.queryMySQL(sql, params);
+        }
+      }
+      throw error;
     }
   }
 

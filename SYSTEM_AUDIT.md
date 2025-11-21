@@ -119,8 +119,6 @@
 │   ├── syncService.ts         ✅ Sync with checksum
 │   ├── mongoDb.ts             ✅ MongoDB connection
 │   ├── googleSheets.ts        ✅ Google Sheets API
-│   ├── cronScheduler.ts       ✅ Cron jobs
-│   ├── initCron.ts            ✅ Initialize cron
 │   └── autoMigration.ts       ✅ Auto schema updates
 ├── scripts/                    ✅ Admin utilities
 │   ├── create-admin.js        ✅ Create admin user
@@ -157,19 +155,14 @@
 | `/api/auth/session` | GET | ✅ | Check session |
 | `/api/sync-table` | PUT | ✅ | Manual sync (with checksum) |
 | `/api/sync-logs` | GET | ✅ | Get sync logs |
-| `/api/cron-jobs` | GET/POST | ✅ | Manage cron jobs |
-| `/api/cron-jobs/run` | POST | ✅ | Manual run (direct call) |
 | `/api/datasets` | GET | ✅ | Get database tables |
 | `/api/folders` | GET/POST | ✅ | Manage folders |
-| `/api/dashboard/stats` | GET | ✅ | Dashboard statistics |
 | `/api/users` | GET/POST/PUT | ✅ | User management |
 
 ### Pages
 | Page | Route | Status | Features |
 |------|-------|--------|----------|
-| Dashboard | `/dashboard` | ✅ | Stats, recent syncs |
 | Database | `/database` | ✅ | Table explorer, preview |
-| Cron Jobs | `/cron` | ✅ | Schedule management |
 | Sync Logs | `/log` | ✅ | Real-time logs (2s refresh) |
 | Users | `/users` | ✅ | User management |
 | Settings | `/settings` | ✅ | Database settings |

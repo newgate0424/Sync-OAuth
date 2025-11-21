@@ -38,7 +38,7 @@ export function middleware(request: NextRequest) {
   }
 
   // หน้าที่ต้อง login
-  const protectedPaths = ['/', '/dashboard', '/database', '/log', '/users', '/settings', '/cron'];
+  const protectedPaths = ['/', '/database', '/log', '/users', '/settings'];
   const isProtectedPath = protectedPaths.some(path => pathname.startsWith(path));
 
   if (isProtectedPath && !isAuthenticated) {
@@ -61,9 +61,7 @@ export function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     '/',
-    '/dashboard/:path*',
     '/database/:path*',
-    '/cron/:path*',
     '/log/:path*',
     '/users/:path*',
     '/settings/:path*',

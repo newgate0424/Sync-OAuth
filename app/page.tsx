@@ -1,12 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { Database, FileText, Clock, LayoutDashboard, Settings, ArrowRight, CheckCircle, Zap, Shield } from 'lucide-react';
+import { Database, FileText, Clock, Settings, ArrowRight, CheckCircle, Zap, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export default function Home() {
   const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
-  const [stats, setStats] = useState<any>(null);
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -19,20 +18,7 @@ export default function Home() {
       }
     };
     
-    const fetchQuickStats = async () => {
-      try {
-        const response = await fetch('/api/dashboard/stats');
-        if (response.ok) {
-          const data = await response.json();
-          setStats(data);
-        }
-      } catch (error) {
-        console.error('Error fetching stats:', error);
-      }
-    };
-    
     checkHealth();
-    fetchQuickStats();
     const interval = setInterval(checkHealth, 30000); // Check every 30s
     return () => clearInterval(interval);
   }, []);
@@ -46,14 +32,14 @@ export default function Home() {
             Google Sheets Sync System
           </h1>
           <p className="text-xl text-blue-100 mb-6">
-            ระบบซิงค์ข้อมูลจาก Google Sheets สู่ฐานข้อมูลอัตโนมัติ พร้อม Cron Jobs และการจัดการที่ง่ายดาย
+            ระบบซิงค์ข้อมูลจาก Google Sheets สู่ฐานข้อมูลอัตโนมัติ และการจัดการที่ง่ายดาย
           </p>
           <div className="flex items-center gap-4">
             <Link 
-              href="/dashboard"
+              href="/database"
               className="inline-flex items-center gap-2 bg-white text-blue-600 px-6 py-3 rounded-lg font-semibold hover:bg-blue-50 transition-colors"
             >
-              ไปที่ Dashboard
+              ไปที่ Database
               <ArrowRight className="w-5 h-5" />
             </Link>
             <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
@@ -78,59 +64,10 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Quick Stats */}
-      {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">ตารางทั้งหมด</p>
-                <p className="text-3xl font-bold text-gray-800">{stats.totalTables || 0}</p>
-              </div>
-              <Database className="w-10 h-10 text-blue-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">แถวข้อมูล</p>
-                <p className="text-3xl font-bold text-gray-800">{stats.totalRows?.toLocaleString() || 0}</p>
-              </div>
-              <FileText className="w-10 h-10 text-green-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">Cron Jobs</p>
-                <p className="text-3xl font-bold text-gray-800">{stats.activeCronJobs || 0}</p>
-              </div>
-              <Clock className="w-10 h-10 text-purple-500" />
-            </div>
-          </div>
-          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600 mb-1">อัตราสำเร็จ</p>
-                <p className="text-3xl font-bold text-gray-800">{stats.successRate || 0}%</p>
-              </div>
-              <CheckCircle className="w-10 h-10 text-yellow-500" />
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {/* Features Section */}
       <div className="grid md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
-          <div className="bg-blue-100 w-12 h-12 rounded-lg flex items-center justify-center mb-4">
-            <Zap className="w-6 h-6 text-blue-600" />
-          </div>
-          <h3 className="text-lg font-semibold text-gray-800 mb-2">ซิงค์อัตโนมัติ</h3>
-          <p className="text-gray-600 text-sm">
-            ตั้งค่า Cron Jobs เพื่อซิงค์ข้อมูลจาก Google Sheets อัตโนมัติตามเวลาที่กำหนด
-          </p>
-        </div>
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
           <div className="bg-green-100 w-12 h-12 rounded-lg flex items-center justify-center mb-4">
             <Database className="w-6 h-6 text-green-600" />
@@ -153,20 +90,6 @@ export default function Home() {
 
       {/* Main Menu Cards */}
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Link href="/dashboard">
-          <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-lg transition-all cursor-pointer border-2 border-transparent hover:border-blue-500 group">
-            <div className="flex items-center justify-center w-14 h-14 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl mb-4 group-hover:scale-110 transition-transform">
-              <LayoutDashboard className="w-7 h-7 text-white" />
-            </div>
-            <h2 className="text-xl font-semibold text-gray-800 mb-2">
-              Dashboard
-            </h2>
-            <p className="text-gray-600 text-sm">
-              ภาพรวมระบบ สถิติการซิงค์ และข้อมูลสำคัญทั้งหมด
-            </p>
-          </div>
-        </Link>
-
         <Link href="/database">
           <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-lg transition-all cursor-pointer border-2 border-transparent hover:border-green-500 group">
             <div className="flex items-center justify-center w-14 h-14 bg-gradient-to-br from-green-500 to-green-600 rounded-xl mb-4 group-hover:scale-110 transition-transform">
@@ -181,19 +104,7 @@ export default function Home() {
           </div>
         </Link>
 
-        <Link href="/cron">
-          <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-lg transition-all cursor-pointer border-2 border-transparent hover:border-purple-500 group">
-            <div className="flex items-center justify-center w-14 h-14 bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl mb-4 group-hover:scale-110 transition-transform">
-              <Clock className="w-7 h-7 text-white" />
-            </div>
-            <h2 className="text-xl font-semibold text-gray-800 mb-2">
-              Cron Jobs
-            </h2>
-            <p className="text-gray-600 text-sm">
-              ตั้งค่าและจัดการตารางเวลาการซิงค์อัตโนมัติ
-            </p>
-          </div>
-        </Link>
+
 
         <Link href="/log">
           <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-lg transition-all cursor-pointer border-2 border-transparent hover:border-yellow-500 group">

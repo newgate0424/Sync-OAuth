@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Database, Table2, ChevronRight, ChevronDown, Search, Play, FileText, MoreVertical, Folder, FolderPlus, Edit2, Trash2, FilePlus, X, RefreshCw, Eye } from 'lucide-react';
+import { Database, Table2, ChevronRight, ChevronDown, Search, Play, FileText, MoreVertical, Folder, FolderPlus, Edit2, Trash2, FilePlus, X, RefreshCw, Eye, Clock, Save } from 'lucide-react';
+import Editor, { useMonaco } from '@monaco-editor/react';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,16 @@ interface Folder {
   tables: TableInfo[];
 }
 
+interface SavedQuery {
+  id: string;
+  name: string;
+  sql: string;
+  description?: string;
+  schedule?: string;
+  destination_table?: string;
+  updated_at: string;
+}
+
 function DatabasePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -46,7 +57,7 @@ function DatabasePageContent() {
   const [sheetSchema, setSheetSchema] = useState<any>(null);
   const [tableName, setTableName] = useState('');
   const [syncLoading, setSyncLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'schema' | 'details' | 'preview'>('preview');
+  const [activeTab, setActiveTab] = useState<'schema' | 'details' | 'preview' | 'query'>('preview');
   const [expandedCell, setExpandedCell] = useState<{ rowIdx: number; colIdx: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredData, setFilteredData] = useState<any>(null);
@@ -66,11 +77,32 @@ function DatabasePageContent() {
   const [showDrivePicker, setShowDrivePicker] = useState(false);
   const [driveSearchQuery, setDriveSearchQuery] = useState('');
   
+  // Query Tab State
+  const [sql, setSql] = useState('');
+  const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
+  const [queryTabResult, setQueryTabResult] = useState<any>(null);
+  const [isQueryRunning, setIsQueryRunning] = useState(false);
+  const [queryError, setQueryError] = useState<string | null>(null);
+  const [showSaveQueryDialog, setShowSaveQueryDialog] = useState(false);
+  const [saveQueryForm, setSaveQueryForm] = useState({ name: '', description: '' });
+  const [selectedQueryId, setSelectedQueryId] = useState<string | null>(null);
+
+  // Selected Dataset State
+  const [selectedDataset, setSelectedDataset] = useState<{ name: string; tables: TableInfo[]; folders: Folder[] } | null>(null);
+
   // Save activeTab to localStorage whenever it changes
-  const handleTabChange = (tab: 'schema' | 'details' | 'preview') => {
+  const handleTabChange = (tab: 'schema' | 'details' | 'preview' | 'query') => {
     setActiveTab(tab);
     localStorage.setItem('activeTab', tab);
   };
+
+  // Load activeTab from localStorage on mount
+  useEffect(() => {
+    const savedTab = localStorage.getItem('activeTab');
+    if (savedTab && ['schema', 'details', 'preview', 'query'].includes(savedTab)) {
+      setActiveTab(savedTab as 'schema' | 'details' | 'preview' | 'query');
+    }
+  }, []);
   const [tableSchema, setTableSchema] = useState<any>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -132,12 +164,13 @@ function DatabasePageContent() {
     fetchDatasets();
     fetchDatabaseType();
     fetchGoogleStatus();
+    fetchSavedQueries();
     // รัน auto migration
     runAutoMigration();
     
     // Auto-refresh datasets ทุก 10 วินาที เพื่ออัปเดต rows และ size
     const interval = setInterval(() => {
-      fetchDatasets();
+      fetchDatasets(true);
     }, 10000);
     
     return () => clearInterval(interval);
@@ -202,7 +235,7 @@ function DatabasePageContent() {
       // โหลดตารางจาก URL เฉพาะถ้ายังไม่ได้เลือก
       selectTableFromURL(dataset, table, folder || undefined);
       if (tab && (tab === 'schema' || tab === 'details' || tab === 'preview')) {
-        setActiveTab(tab as 'schema' | 'details' | 'preview');
+        setActiveTab(tab as 'schema' | 'details' | 'preview' | 'query');
       }
     } else if (folder && dataset && !selectedFolder && !selectedTable) {
       // โหลดโฟลเดอร์จาก URL เฉพาะถ้ายังไม่ได้เลือก
@@ -250,9 +283,16 @@ function DatabasePageContent() {
         folderName: folderName,
         tables: folder.tables
       });
-      setSelectedTable(null);
-      setFilteredData(null);
-      setSearchQuery('');
+      setSelectedTable(null); // ล้างการเลือกตาราง
+      setSelectedDataset(null); // ล้างการเลือก Dataset
+      setFilteredData(null); // ล้างการค้นหา
+      setSearchQuery(''); // ล้างข้อความค้นหา
+      
+      // อัพเดท URL
+      const params = new URLSearchParams();
+      params.set('dataset', datasetName);
+      params.set('folder', folderName);
+      router.push(`/database?${params.toString()}`);
     }
   };
 
@@ -267,18 +307,53 @@ function DatabasePageContent() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchDatasets = async () => {
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const fetchDatasets = async (silent = false) => {
     try {
-      const [datasetsRes, foldersRes] = await Promise.all([
-        fetch('/api/datasets'),
-        fetch('/api/folders')
-      ]);
+      if (!silent) setLoading(true);
+      setConnectionError(null);
       
-      const datasetsData = await datasetsRes.json();
-      const foldersData = await foldersRes.json();
+      // Fetch folders first (usually faster)
+      let foldersData = { folders: [], folderTables: [] };
+      try {
+        const foldersRes = await fetch('/api/folders');
+        if (foldersRes.ok) {
+          foldersData = await foldersRes.json();
+        } else {
+          console.error('Failed to fetch folders');
+        }
+      } catch (e) {
+        console.error('Error fetching folders:', e);
+      }
+
+      // Fetch datasets
+      let datasetsData = [];
+      try {
+        const datasetsRes = await fetch('/api/datasets');
+        if (datasetsRes.ok) {
+          datasetsData = await datasetsRes.json();
+        } else {
+          console.error('Failed to fetch datasets');
+          try {
+            const errData = await datasetsRes.json();
+            if (errData.isConnectionError) {
+              setConnectionError(errData.details || 'Database connection failed');
+              showToast('ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาตรวจสอบการตั้งค่า', 'error');
+            } else {
+              showToast('ไม่สามารถโหลดข้อมูลตารางได้: ' + (errData.error || datasetsRes.statusText), 'error');
+            }
+          } catch {
+            showToast('ไม่สามารถโหลดข้อมูลตารางได้: ' + datasetsRes.statusText, 'error');
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching datasets:', e);
+        showToast('เกิดข้อผิดพลาดในการเชื่อมต่อกับเซิร์ฟเวอร์', 'error');
+      }
       
       // จัดเตรียมโฟลเดอร์
-      const folders = foldersData.folders.map((folder: any) => ({
+      const folders = (foldersData.folders || []).map((folder: any) => ({
         id: folder.id,
         name: folder.name,
         description: folder.description,
@@ -294,7 +369,7 @@ function DatabasePageContent() {
       
       // จัดกลุ่มตารางตาม folder_id
       const folderTableMap: any = {};
-      foldersData.folderTables.forEach((ft: any) => {
+      (foldersData.folderTables || []).forEach((ft: any) => {
         // ตรวจสอบว่า folder_id มีอยู่จริงใน folders หรือไม่ (ป้องกัน orphaned tables)
         // แปลงเป็น string เพื่อความชัวร์ในการเปรียบเทียบ
         const folderIdStr = String(ft.folder_id);
@@ -307,13 +382,13 @@ function DatabasePageContent() {
       });
       
       // รวมข้อมูล datasets กับ folders และกระจายตารางไปในโฟลเดอร์
-      const datasetsWithFolders = datasetsData.map((ds: any) => {
+      const datasetsWithFolders = Array.isArray(datasetsData) ? datasetsData.map((ds: any) => {
         // กรองตารางที่อยู่ใน folder ออกจาก ds.tables
         const tablesInFolders = new Set(
           Object.values(folderTableMap).flat() as string[]
         );
         
-        const tablesNotInFolder = ds.tables.filter((t: any) => 
+        const tablesNotInFolder = (ds.tables || []).filter((t: any) => 
           !tablesInFolders.has(t.name)
         );
         
@@ -324,7 +399,7 @@ function DatabasePageContent() {
             ...folder,
             expanded: savedExpandedFolders[folderKey] || false,
             tables: (folderTableMap[folder.id] || []).map((tableName: string) => {
-              const tableInfo = ds.tables.find((t: any) => t.name === tableName);
+              const tableInfo = (ds.tables || []).find((t: any) => t.name === tableName);
               return tableInfo || { name: tableName, rows: 0, size: '0 B' };
             })
           };
@@ -336,13 +411,14 @@ function DatabasePageContent() {
           tables: tablesNotInFolder,
           folders: foldersWithTables
         };
-      });
+      }) : [];
       
       setDatasets(datasetsWithFolders);
-      if (loading) setLoading(false);
     } catch (error) {
-      console.error('Error fetching datasets:', error);
-      if (loading) setLoading(false);
+      console.error('Error in fetchDatasets:', error);
+      showToast('เกิดข้อผิดพลาดในการประมวลผลข้อมูล', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -399,6 +475,7 @@ function DatabasePageContent() {
         tables: folder.tables
       });
       setSelectedTable(null); // ล้างการเลือกตาราง
+      setSelectedDataset(null); // ล้างการเลือก Dataset
       setFilteredData(null); // ล้างการค้นหา
       setSearchQuery(''); // ล้างข้อความค้นหา
       
@@ -745,46 +822,53 @@ function DatabasePageContent() {
     });
     setSyncProgress(newProgress);
 
-    // Sync ทุกตารางพร้อมกัน
-    const syncPromises = tables.map(async (table) => {
-      try {
-        const response = await fetch('/api/sync-table', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            dataset: datasetName,
-            tableName: table.name
-          }),
-        });
-        const data = await response.json();
-        
-        if (response.ok) {
-          setSyncProgress(prev => ({
-            ...prev,
-            [table.name]: { status: 'success', message: `${data.rowCount} แถว` }
-          }));
-          return { success: true, table: table.name, rowCount: data.rowCount };
-        } else {
-          setSyncProgress(prev => ({
-            ...prev,
-            [table.name]: { status: 'error', message: data.error }
-          }));
-          return { success: false, table: table.name, error: data.error };
-        }
-      } catch (error) {
-        setSyncProgress(prev => ({
-          ...prev,
-          [table.name]: { status: 'error', message: 'เกิดข้อผิดพลาด' }
-        }));
-        return { success: false, table: table.name, error: String(error) };
-      }
-    });
+    let successCount = 0;
+    let failCount = 0;
+    const CONCURRENCY = 3; // Process 3 tables at a time
 
-    const results = await Promise.all(syncPromises);
-    const successCount = results.filter(r => r.success).length;
-    const failCount = results.filter(r => !r.success).length;
-    
-    // Clear loading for all tables
+    for (let i = 0; i < tables.length; i += CONCURRENCY) {
+      const batch = tables.slice(i, i + CONCURRENCY);
+      
+      await Promise.all(batch.map(async (table) => {
+        try {
+          const response = await fetch('/api/sync-table', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dataset: datasetName,
+              tableName: table.name,
+              forceSync: false // Use Smart Sync (Skip if unchanged)
+            }),
+          });
+          const data = await response.json();
+          
+          if (response.ok) {
+            setSyncProgress(prev => ({
+              ...prev,
+              [table.name]: { status: 'success', message: `${data.stats?.total || 0} แถว` }
+            }));
+            successCount++;
+          } else {
+            setSyncProgress(prev => ({
+              ...prev,
+              [table.name]: { status: 'error', message: data.error }
+            }));
+            failCount++;
+          }
+        } catch (error) {
+          setSyncProgress(prev => ({
+            ...prev,
+            [table.name]: { status: 'error', message: 'เกิดข้อผิดพลาด' }
+          }));
+          failCount++;
+        } finally {
+          // Clear loading for this specific table immediately
+          setTableSyncLoading(prev => ({ ...prev, [`${datasetName}.${table.name}`]: false }));
+        }
+      }));
+    }
+
+    // Clear loading for all tables (just in case)
     const clearTableLoading: { [key: string]: boolean } = {};
     tables.forEach(table => {
       clearTableLoading[`${datasetName}.${table.name}`] = false;
@@ -1062,6 +1146,208 @@ function DatabasePageContent() {
     }
   };
 
+  // Query Tab Functions
+  const fetchSavedQueries = async () => {
+    try {
+      const res = await fetch('/api/query/saved');
+      if (res.ok) {
+        const data = await res.json();
+        setSavedQueries(data.queries || []);
+      }
+    } catch (error) {
+      console.error('Failed to load queries', error);
+    }
+  };
+
+  const handleRunQuery = async () => {
+    if (!sql.trim()) return;
+    
+    setIsQueryRunning(true);
+    setQueryError(null);
+    setQueryTabResult(null);
+    
+    try {
+      const res = await fetch('/api/query/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to execute query');
+      }
+      
+      setQueryTabResult(data);
+    } catch (error: any) {
+      setQueryError(error.message);
+    } finally {
+      setIsQueryRunning(false);
+    }
+  };
+
+  const handleSaveQuery = async () => {
+    if (!saveQueryForm.name.trim()) {
+      showToast('กรุณาระบุชื่อ Query', 'error');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/query/saved', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: saveQueryForm.name,
+          description: saveQueryForm.description,
+          sql: sql
+        }),
+      });
+
+      if (res.ok) {
+        showToast('บันทึก Query เรียบร้อยแล้ว', 'success');
+        setShowSaveQueryDialog(false);
+        setSaveQueryForm({ name: '', description: '' });
+        fetchSavedQueries();
+      } else {
+        const data = await res.json();
+        showToast(data.error || 'ไม่สามารถบันทึก Query ได้', 'error');
+      }
+    } catch (error) {
+      showToast('เกิดข้อผิดพลาดในการบันทึก', 'error');
+    }
+  };
+
+  const handleDeleteSavedQuery = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('คุณต้องการลบ Query นี้ใช่หรือไม่?')) return;
+
+    try {
+      const res = await fetch(`/api/query/saved?id=${id}`, {
+        method: 'DELETE'
+      });
+
+      if (res.ok) {
+        showToast('ลบ Query เรียบร้อยแล้ว', 'success');
+        if (selectedQueryId === id) {
+          setSelectedQueryId(null);
+          setSql('');
+        }
+        fetchSavedQueries();
+      } else {
+        showToast('ไม่สามารถลบ Query ได้', 'error');
+      }
+    } catch (error) {
+      showToast('เกิดข้อผิดพลาดในการลบ', 'error');
+    }
+  };
+
+  const handleLoadSavedQuery = (query: SavedQuery) => {
+    setSql(query.sql);
+    setSelectedQueryId(query.id);
+  };
+
+  // Autocomplete State
+  const [tables, setTables] = useState<string[]>([]);
+  const tablesRef = useRef<string[]>([]);
+  const monaco = useMonaco();
+
+  useEffect(() => {
+    tablesRef.current = tables;
+  }, [tables]);
+
+  useEffect(() => {
+    if (monaco) {
+      // Register completion provider
+      const disposable = monaco.languages.registerCompletionItemProvider('sql', {
+        triggerCharacters: [' ', '.', '`', '"'],
+        provideCompletionItems: (model, position) => {
+          const word = model.getWordUntilPosition(position);
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn,
+          };
+
+          const textUntilPosition = model.getValueInRange({
+            startLineNumber: position.lineNumber,
+            startColumn: 1,
+            endLineNumber: position.lineNumber,
+            endColumn: position.column,
+          });
+
+          const suggestions: any[] = [];
+
+          // Check if we are after "FROM" or "JOIN"
+          const isAfterFromOrJoin = /\b(FROM|JOIN)\s+["`]?\w*$/i.test(textUntilPosition);
+
+          if (isAfterFromOrJoin) {
+            // Suggest tables
+            tablesRef.current.forEach(table => {
+              suggestions.push({
+                label: table,
+                kind: monaco.languages.CompletionItemKind.Class,
+                insertText: table.includes(' ') ? `\`${table}\`` : table,
+                detail: 'Table',
+                range: range,
+              });
+            });
+          } else {
+            // Suggest keywords
+            const keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'LIMIT', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'ON', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'BETWEEN', 'LIKE', 'AS', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'];
+            keywords.forEach(keyword => {
+              suggestions.push({
+                label: keyword,
+                kind: monaco.languages.CompletionItemKind.Keyword,
+                insertText: keyword,
+                range: range,
+              });
+            });
+          }
+
+          return { suggestions };
+        }
+      });
+
+      return () => disposable.dispose();
+    }
+  }, [monaco]);
+
+  // Fetch all tables for autocomplete
+  const fetchAllTables = async () => {
+    try {
+      const res = await fetch('/api/datasets');
+      if (res.ok) {
+        const data = await res.json();
+        const allTables: string[] = [];
+        data.forEach((dataset: any) => {
+          if (dataset.tables) {
+            dataset.tables.forEach((table: any) => {
+              allTables.push(table.name);
+            });
+          }
+          if (dataset.folders) {
+            dataset.folders.forEach((folder: any) => {
+              if (folder.tables) {
+                folder.tables.forEach((table: any) => {
+                  allTables.push(table.name);
+                });
+              }
+            });
+          }
+        });
+        setTables(allTables);
+      }
+    } catch (error) {
+      console.error('Failed to load tables for autocomplete', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchAllTables();
+  }, []);
+
   return (
     <div className="flex gap-4 h-[calc(100vh-8rem)]">
       {/* Sidebar - Datasets & Tables */}
@@ -1088,13 +1374,32 @@ function DatabasePageContent() {
             <div className="flex items-center justify-center h-full">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
             </div>
+          ) : connectionError ? (
+            <div className="flex flex-col items-center justify-center h-full p-4 text-center">
+              <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mb-3">
+                <X className="w-6 h-6 text-red-500" />
+              </div>
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">เชื่อมต่อไม่ได้</h3>
+              <p className="text-xs text-gray-500 mb-4">{connectionError}</p>
+              <button
+                onClick={() => router.push('/settings')}
+                className="px-3 py-1.5 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 transition-colors"
+              >
+                ตั้งค่า Database
+              </button>
+            </div>
           ) : (
             <div className="space-y-1">
               {datasets.map((dataset) => (
                 <div key={dataset.name}>
                   <div className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-100 rounded-lg transition-colors group">
                     <button
-                      onClick={() => toggleDataset(dataset.name)}
+                      onClick={() => {
+                        toggleDataset(dataset.name);
+                        setSelectedDataset(dataset);
+                        setSelectedFolder(null);
+                        setSelectedTable(null);
+                      }}
                       className="flex-1 flex items-center gap-2 text-left"
                     >
                       {dataset.expanded ? (
@@ -1406,44 +1711,163 @@ function DatabasePageContent() {
               </div>
             </div>
 
+
+
             <div className="flex-1 overflow-auto p-6">
               <h3 className="text-lg font-semibold mb-4">ตารางในโฟลเดอร์</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {selectedFolder.tables.map((table) => (
-                  <div
-                    key={table.name}
-                    onClick={() => selectTable(selectedFolder.dataset, table.name, selectedFolder.folderName)}
-                    className="border border-gray-200 rounded-lg p-4 hover:shadow-md hover:border-blue-300 transition-all cursor-pointer"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <Table2 className="w-5 h-5 text-blue-500" />
-                        <h4 className="font-semibold text-gray-900">{table.name}</h4>
-                      </div>
-                    </div>
-                    <div className="space-y-1 text-sm text-gray-600">
-                      <div className="flex justify-between">
-                        <span>แถว:</span>
-                        <span className="font-medium">{(table.rows || 0).toLocaleString()}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>ขนาด:</span>
-                        <span className="font-medium">{table.size || '0 B'}</span>
-                      </div>
-                    </div>
-                    <button className="mt-3 w-full px-3 py-1.5 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 text-sm font-medium transition-colors">
-                      เปิดตาราง
-                    </button>
-                  </div>
-                ))}
+              <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
+                    <tr>
+                      <th className="px-6 py-3 font-semibold">ชื่อตาราง</th>
+                      <th className="px-6 py-3 font-semibold">จำนวนแถว</th>
+                      <th className="px-6 py-3 font-semibold">ขนาด</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {selectedFolder.tables.map((table) => (
+                      <tr 
+                        key={table.name}
+                        onClick={() => selectTable(selectedFolder.dataset, table.name, selectedFolder.folderName)}
+                        className="hover:bg-blue-50 cursor-pointer transition-colors group"
+                      >
+                        <td className="px-6 py-4 font-medium text-gray-900 flex items-center gap-3">
+                          <div className="p-2 bg-blue-50 rounded-lg group-hover:bg-blue-100 transition-colors">
+                            <Table2 className="w-5 h-5 text-blue-600" />
+                          </div>
+                          {table.name}
+                        </td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {(table.rows || 0).toLocaleString()
+                          }
+                        </td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {table.size || '0 B'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            </div>
+          </div>
+        ) : selectedDataset ? (
+          <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+              <div className="flex items-center gap-3 mb-2">
+                <Database className="w-8 h-8 text-blue-600" />
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">{selectedDataset.name}</h2>
+                  <p className="text-sm text-gray-600">Database Overview</p>
+                </div>
+              </div>
+              <div className="flex gap-4 mt-4">
+                <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
+                  <p className="text-xs text-gray-500">จำนวนโฟลเดอร์</p>
+                  <p className="text-2xl font-bold text-yellow-600">{selectedDataset.folders.length}</p>
+                </div>
+                <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
+                  <p className="text-xs text-gray-500">จำนวนตารางทั้งหมด</p>
+                  <p className="text-2xl font-bold text-blue-600">
+                    {selectedDataset.tables.length + selectedDataset.folders.reduce((sum, f) => sum + f.tables.length, 0)}
+                  </p>
+                </div>
+                <div className="bg-white px-4 py-2 rounded-lg shadow-sm">
+                  <p className="text-xs text-gray-500">จำนวนแถวทั้งหมด</p>
+                  <p className="text-2xl font-bold text-green-600">
+                    {(
+                      selectedDataset.tables.reduce((sum, t) => sum + (t.rows || 0), 0) +
+                      selectedDataset.folders.reduce((sum, f) => sum + f.tables.reduce((s, t) => s + (t.rows || 0), 0), 0)
+                    ).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto p-6">
+              <h3 className="text-lg font-semibold mb-4">โฟลเดอร์ในฐานข้อมูล</h3>
+              <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm mb-8">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
+                    <tr>
+                      <th className="px-6 py-3 font-semibold">ชื่อโฟลเดอร์</th>
+                      <th className="px-6 py-3 font-semibold">จำนวนตาราง</th>
+                      <th className="px-6 py-3 font-semibold">แถวรวม</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {selectedDataset.folders.map((folder) => (
+                      <tr
+                        key={folder.name}
+                        onClick={() => {
+                          toggleFolder(selectedDataset.name, folder.name);
+                          selectFolder(selectedDataset.name, folder.name);
+                        }}
+                        className="hover:bg-yellow-50 cursor-pointer transition-colors group"
+                      >
+                        <td className="px-6 py-4 font-medium text-gray-900 flex items-center gap-3">
+                          <div className="p-2 bg-yellow-50 rounded-lg group-hover:bg-yellow-100 transition-colors">
+                            <Folder className="w-5 h-5 text-yellow-600" />
+                          </div>
+                          {folder.name}
+                        </td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {folder.tables.length}
+                        </td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {folder.tables.reduce((sum, t) => sum + (t.rows || 0), 0).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {selectedDataset.tables.length > 0 && (
+                <>
+                  <h3 className="text-lg font-semibold mb-4">ตารางที่ไม่อยู่ในโฟลเดอร์</h3>
+                  <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
+                        <tr>
+                          <th className="px-6 py-3 font-semibold">ชื่อตาราง</th>
+                          <th className="px-6 py-3 font-semibold">จำนวนแถว</th>
+                          <th className="px-6 py-3 font-semibold">ขนาด</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {selectedDataset.tables.map((table) => (
+                          <tr
+                            key={table.name}
+                            onClick={() => selectTable(selectedDataset.name, table.name)}
+                            className="hover:bg-blue-50 cursor-pointer transition-colors group"
+                          >
+                            <td className="px-6 py-4 font-medium text-gray-900 flex items-center gap-3">
+                              <div className="p-2 bg-blue-50 rounded-lg group-hover:bg-blue-100 transition-colors">
+                                <Table2 className="w-5 h-5 text-blue-600" />
+                              </div>
+                              {table.name}
+                            </td>
+                            <td className="px-6 py-4 text-gray-600">
+                              {(table.rows || 0).toLocaleString()}
+                            </td>
+                            <td className="px-6 py-4 text-gray-600">
+                              {table.size || '0 B'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ) : selectedTable ? (
           <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col min-w-0">
             {/* Table Header with Breadcrumb */}
             <div className="p-4 border-b border-gray-200 bg-gray-50">
-              <div className="flex items-center gap-2 text-sm text-gray-600 mb-3">
+              <div className="flex itemscenter gap-2 text-sm text-gray-600 mb-3">
                 <span className="font-medium text-blue-600">{selectedTable.dataset}</span>
                 {selectedTable.folderName && (
                   <>
@@ -1459,8 +1883,8 @@ function DatabasePageContent() {
               <div className="flex items-center gap-2 flex-wrap mb-3">
                 <button 
                   onClick={() => {
-                    setActiveTab('schema');
-                    localStorage.setItem('activeTab', 'schema');
+                    setActiveTab('query');
+                    localStorage.setItem('activeTab', 'query');
                   }}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm font-medium"
                 >
@@ -1548,7 +1972,7 @@ function DatabasePageContent() {
                     setTableSyncLoading(prev => ({ ...prev, [tableKey]: false }));
                   }}
                   disabled={selectedTable ? tableSyncLoading[`${selectedTable.dataset}.${selectedTable.table}`] : true}
-                  className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm disabled:bg-gray-300"
+                  className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-300"
                 >
                   <RefreshCw className={`w-4 h-4 ${selectedTable && tableSyncLoading[`${selectedTable.dataset}.${selectedTable.table}`] ? 'animate-spin' : ''}`} />
                   Sync
@@ -1605,7 +2029,7 @@ function DatabasePageContent() {
                       <X className="w-4 h-4" />
                     </button>
                   )}
-                </div>
+                               </div>
                 <button
                   onClick={() => handleSearch(searchQuery)}
                   disabled={!searchQuery}
@@ -1648,6 +2072,16 @@ function DatabasePageContent() {
                   }`}
                 >
                   Preview
+                </button>
+                <button
+                  onClick={() => handleTabChange('query')}
+                  className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    activeTab === 'query'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Query
                 </button>
               </div>
             </div>
@@ -1800,11 +2234,9 @@ function DatabasePageContent() {
                         <table className="w-full text-sm table-fixed border-collapse">
                         <thead className="bg-gray-50 sticky top-0">
                           <tr>
-                            <th className="px-3 py-2 text-left font-semibold text-gray-700 border border-gray-300 w-16 bg-gray-50">
-                              #
-                            </th>
+                            <th className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-r bg-gray-50 w-12 text-center">#</th>
                             {Object.keys((filteredData || queryResult).rows[0]).filter(key => key !== 'id' && key !== 'synced_at').map((key) => (
-                              <th key={key} className="px-3 py-2 text-left font-semibold text-gray-700 border border-gray-300 w-48 bg-gray-50">
+                              <th key={key} className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-r bg-gray-50 whitespace-nowrap min-w-[100px]">
                                 <div className="truncate" title={key}>{key}</div>
                               </th>
                             ))}
@@ -1813,7 +2245,7 @@ function DatabasePageContent() {
                         <tbody>
                           {(filteredData || queryResult).rows.map((row: any, rowIdx: number) => (
                           <tr key={rowIdx} className="hover:bg-blue-50">
-                            <td className="px-3 py-2 text-gray-500 text-center border border-gray-300 font-mono text-xs">
+                            <td className="px-3 py-2 text-gray-500 text-center border-b border-r font-mono text-xs">
                               {(currentPage - 1) * rowsPerPage + rowIdx + 1}
                             </td>
                             {Object.entries(row).filter(([key]) => key !== 'id' && key !== 'synced_at').map(([key, value]: [string, any], colIdx: number) => {
@@ -1821,32 +2253,10 @@ function DatabasePageContent() {
                               return (
                                 <td 
                                   key={colIdx} 
-                                  className="px-3 py-2 text-gray-700 border border-gray-300 cursor-pointer"
-                                  onDoubleClick={() => setExpandedCell(isExpanded ? null : { rowIdx, colIdx })}
-                                  onClick={() => {
-                                    if (expandedCell && (expandedCell.rowIdx !== rowIdx || expandedCell.colIdx !== colIdx)) {
-                                      setExpandedCell(null);
-                                    }
-                                  }}
-                                  style={isExpanded ? { height: 'auto', minHeight: '100px' } : {}}
+                                  className="px-3 py-2 text-gray-700 border-b border-r max-w-xs truncate" 
+                                  title={String(value)}
                                 >
-                                  {isExpanded ? (
-                                    <textarea
-                                      className="w-full h-full min-h-[100px] p-1 text-sm border-none focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
-                                      defaultValue={value !== null ? String(value) : ''}
-                                      autoFocus
-                                      onBlur={() => setExpandedCell(null)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Escape') {
-                                          setExpandedCell(null);
-                                        }
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className="truncate" title={value !== null ? String(value) : 'null'}>
-                                      {value !== null ? String(value) : <span className="text-gray-400 italic">null</span>}
-                                    </div>
-                                  )}
+                                  {value !== null ? String(value) : <span className="text-gray-400 italic">null</span>}
                                 </td>
                               );
                             })}
@@ -1991,6 +2401,142 @@ function DatabasePageContent() {
                   <p>กรุณารอสักครู่...</p>
                 </div>
               )}
+
+              {/* Query Tab */}
+              {activeTab === 'query' && (
+                <div className="flex flex-col h-[calc(100vh-250px)]">
+                  {/* Query Toolbar */}
+                  <div className="flex items-center justify-between p-2 border-b bg-gray-50">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleRunQuery}
+                        disabled={isQueryRunning || !sql.trim()}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        {isQueryRunning ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                        Run
+                      </button>
+                      <button
+                        onClick={() => setShowSaveQueryDialog(true)}
+                        disabled={!sql.trim()}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                      >
+                        <Save className="w-4 h-4" />
+                        Save
+                      </button>
+                    </div>
+                    
+                    {/* Saved Queries Dropdown */}
+                    <div className="relative group">
+                      <button className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 text-sm text-gray-700">
+                        <Clock className="w-4 h-4 text-gray-500" />
+                        Saved Queries
+                        <ChevronDown className="w-4 h-4 text-gray-400" />
+                      </button>
+                      <div className="absolute right-0 mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-1 hidden group-hover:block z-50 max-h-96 overflow-y-auto">
+                        {savedQueries.length === 0 ? (
+                          <div className="px-4 py-2 text-sm text-gray-500 text-center">No saved queries</div>
+                        ) : (
+                          savedQueries.map((q) => (
+                            <div key={q.id} className="flex items-center justify-between px-4 py-2 hover:bg-gray-50 group/item">
+                              <button
+                                onClick={() => handleLoadSavedQuery(q)}
+                                className="flex-1 text-left text-sm text-gray-700 truncate mr-2"
+                                title={q.description || q.name}
+                              >
+                                {q.name}
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteSavedQuery(q.id, e)}
+                                className="p-1 text-gray-400 hover:text-red-600 opacity-0 group-hover/item:opacity-100 transition-opacity"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Editor & Results Split */}
+                  <div className="flex-1 flex flex-col min-h-0">
+                    {/* Editor */}
+                    <div className="h-1/2 border-b min-h-[200px]">
+                      <Editor
+                        height="100%"
+                        defaultLanguage="sql"
+                        value={sql}
+                        onChange={(value) => setSql(value || '')}
+                        options={{
+                          minimap: { enabled: false },
+                          fontSize: 14,
+                          lineNumbers: 'on',
+                          scrollBeyondLastLine: false,
+                          automaticLayout: true,
+                        }}
+                      />
+                    </div>
+
+                    {/* Results */}
+                    <div className="flex-1 overflow-auto bg-white">
+                      {queryError ? (
+                        <div className="p-4 text-red-600 bg-red-50 border-l-4 border-red-500 m-4">
+                          <h4 className="font-bold mb-1">Error Executing Query</h4>
+                          <pre className="whitespace-pre-wrap text-sm font-mono">{queryError}</pre>
+                        </div>
+                      ) : queryTabResult ? (
+                        <div className="flex flex-col h-full">
+                          <div className="px-4 py-2 bg-gray-50 border-b flex justify-between items-center">
+                            <span className="text-sm text-gray-600">
+                              {queryTabResult.rowCount} rows found ({queryTabResult.duration}ms)
+                            </span>
+                          </div>
+                          <div className="flex-1 overflow-auto">
+                            <table className="w-full text-sm border-collapse">
+                              <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
+                                <tr>
+                                  <th className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-r bg-gray-50 w-12 text-center">#</th>
+                                  {queryTabResult.fields.map((field: string) => (
+                                    <th key={field} className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-r bg-gray-50 whitespace-nowrap min-w-[100px]">
+                                      {field}
+                                    </th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {queryTabResult.rows.map((row: any, idx: number) => (
+                                  <tr key={idx} className="hover:bg-blue-50">
+                                    <td className="px-3 py-2 text-gray-500 text-center border-b border-r font-mono text-xs">
+                                      {idx + 1}
+                                    </td>
+                                    {queryTabResult.fields.map((field: string, colIdx: number) => (
+                                      <td key={colIdx} className="px-3 py-2 text-gray-700 border-b border-r max-w-xs truncate" title={String(row[field])}>
+                                        {row[field] === null ? <span className="text-gray-400 italic">null</span> : String(row[field])}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-500">
+                          <div className="text-center">
+                            <Play className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                            <p>Run a query to see results</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -2079,6 +2625,54 @@ function DatabasePageContent() {
                   }`}
                 >
                   {showDialog.type === 'deleteFolder' || showDialog.type === 'deleteTable' || showDialog.type === 'deleteTableDirect' ? 'ลบ' : 'ยืนยัน'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save Query Dialog */}
+      {showSaveQueryDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">Save Query</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                  <input
+                    type="text"
+                    value={saveQueryForm.name}
+                    onChange={(e) => setSaveQueryForm({ ...saveQueryForm, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Query Name"
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Description (Optional)</label>
+                  <textarea
+                    value={saveQueryForm.description}
+                    onChange={(e) => setSaveQueryForm({ ...saveQueryForm, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none h-24"
+                    placeholder="Query Description"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowSaveQueryDialog(false)}
+                  className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveQuery}
+                  disabled={!saveQueryForm.name.trim()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Save
                 </button>
               </div>
             </div>
@@ -2197,7 +2791,7 @@ function DatabasePageContent() {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="block text-sm font-medium text-gray-700">แถวเริ่มต้นที่จะอ่านข้อมูล</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">แถวเริ่มต้นที่จะอ่านข้อมูล</label>
                     <input
                       type="number"
                       min="1"

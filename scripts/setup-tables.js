@@ -81,6 +81,11 @@ const sqlDefinitions = {
       \`sync_type\` ENUM('full', 'incremental') DEFAULT 'full',
       \`sync_enabled\` BOOLEAN DEFAULT TRUE,
       \`last_sync\` TIMESTAMP NULL,
+      \`last_status\` ENUM('success', 'error', 'skipped') DEFAULT NULL,
+      \`error_message\` TEXT DEFAULT NULL,
+      \`last_checksum\` VARCHAR(255) DEFAULT NULL,
+      \`last_row_count\` INT DEFAULT 0,
+      \`last_modified_time\` VARCHAR(255) DEFAULT NULL,
       \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )

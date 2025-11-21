@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
         
         // Check if this is a MongoDB collection
         const isMongoCollection = (schema && schema.type === 'mongodb_collection') || 
-                                  ['folders', 'folder_tables', 'settings', 'cron_jobs', 'users', 'saved_queries'].includes(tableName);
+                                  ['folders', 'folder_tables', 'settings', 'users', 'saved_queries'].includes(tableName);
 
         if (isMongoCollection) {
             console.log(`   📦 Target: MongoDB Collection`);

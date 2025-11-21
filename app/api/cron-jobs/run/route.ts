@@ -40,14 +40,96 @@ export async function POST(request: NextRequest) {
     );
     
     try {
-      // เรียก sync service โดยตรง (ไม่ใช้ HTTP fetch)
-      console.log(`[Run Job] Calling sync service directly for table: ${job.table}`);
-      
-      const result = await performSync({
-        dataset: process.env.DATABASE_NAME || 'sheets_sync',
-        tableName: job.table,
-        forceSync: false
-      });
+      let result;
+
+      if (job.table === '*') {
+        // 📂 Folder Sync Logic
+        console.log(`[Run Job] 📂 Executing folder sync job: ${job.name} (Folder: ${job.folder})`);
+        
+        // 1. Get tables in folder
+        const folderDoc = await db.collection('folders').findOne({ name: job.folder });
+        if (!folderDoc) {
+            throw new Error(`Folder not found: ${job.folder}`);
+        }
+        
+        // Fix: folder_id might be stored as ObjectId OR String in folder_tables
+        const folderId = folderDoc._id;
+        const folderIdStr = folderId.toString();
+        let folderIdObj = null;
+        try {
+            if (ObjectId.isValid(folderIdStr)) {
+                folderIdObj = new ObjectId(folderIdStr);
+            }
+        } catch (e) {}
+
+        const queryIds: any[] = [folderIdStr];
+        if (folderIdObj) queryIds.push(folderIdObj);
+        
+        const folderTables = await db.collection('folder_tables')
+            .find({ folder_id: { $in: queryIds } })
+            .toArray();
+            
+        if (folderTables.length === 0) {
+            result = { success: true, message: 'No tables in folder', stats: { total: 0 } };
+        } else {
+            // 2. Sync with concurrency limit (Optimized)
+            let successCount = 0;
+            let failCount = 0;
+            const totalTables = folderTables.length;
+            const CONCURRENCY = 3; // Process 3 tables at a time
+
+            for (let i = 0; i < totalTables; i += CONCURRENCY) {
+                const batch = folderTables.slice(i, i + CONCURRENCY);
+                console.log(`[Run Job] Processing batch ${Math.floor(i / CONCURRENCY) + 1} (${batch.length} tables)...`);
+                
+                const results = await Promise.all(batch.map(async (ft) => {
+                    try {
+                        console.log(`[Run Job] 🔄 Syncing table ${ft.table_name} in folder ${job.folder}...`);
+                        const syncResult = await performSync({
+                            dataset: process.env.DATABASE_NAME || 'sheets_sync',
+                            tableName: ft.table_name,
+                            forceSync: false // Use Smart Sync (Skip if unchanged)
+                        });
+                        return { success: syncResult.success, error: syncResult.error, tableName: ft.table_name };
+                    } catch (err: any) {
+                        return { success: false, error: err.message, tableName: ft.table_name };
+                    }
+                }));
+
+                for (const res of results) {
+                    if (res.success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                        console.error(`[Run Job] ✗ Failed to sync table ${res.tableName}:`, res.error);
+                    }
+                }
+            }
+            
+            result = {
+                success: failCount === 0,
+                message: `Folder sync completed: ${successCount}/${totalTables} tables synced successfully.`,
+                stats: {
+                    total: totalTables,
+                    success: successCount,
+                    failed: failCount
+                }
+            };
+            
+            if (failCount > 0 && successCount === 0) {
+                 throw new Error(`All ${totalTables} tables failed to sync.`);
+            }
+        }
+      } else {
+        // เรียก sync service โดยตรง (ไม่ใช้ HTTP fetch)
+        console.log(`[Run Job] Calling sync service directly for table: ${job.table}`);
+        
+        result = await performSync({
+          dataset: process.env.DATABASE_NAME || 'sheets_sync',
+          tableName: job.table,
+          forceSync: true // Force sync to match "Sync All Tables" button behavior
+        });
+      }
       
       if (result.success) {
         // อัพเดทสถานะเป็น success
