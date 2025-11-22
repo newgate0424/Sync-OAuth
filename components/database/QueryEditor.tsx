@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Play, Save, Clock, ChevronDown, Trash2, RefreshCw } from 'lucide-react';
-import Editor from '@monaco-editor/react';
-import { SavedQuery } from '../../types/database';
+import Editor, { OnMount } from '@monaco-editor/react';
+import { SavedQuery, Dataset } from '../../types/database';
 
 interface QueryEditorProps {
   sql: string;
@@ -14,6 +14,7 @@ interface QueryEditorProps {
   handleDeleteSavedQuery: (id: string, e: React.MouseEvent) => void;
   queryError: string | null;
   queryTabResult: any;
+  datasets: Dataset[];
 }
 
 export default function QueryEditor({
@@ -26,8 +27,88 @@ export default function QueryEditor({
   handleLoadSavedQuery,
   handleDeleteSavedQuery,
   queryError,
-  queryTabResult
+  queryTabResult,
+  datasets
 }: QueryEditorProps) {
+  const editorRef = useRef<any>(null);
+
+  const handleEditorDidMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor;
+
+    // Register SQL completion provider
+    monaco.languages.registerCompletionItemProvider('sql', {
+      triggerCharacters: [' '],
+      provideCompletionItems: (model, position) => {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+
+        // Get text before cursor to determine context
+        const textUntilPosition = model.getValueInRange({
+            startLineNumber: position.lineNumber,
+            startColumn: 1,
+            endLineNumber: position.lineNumber,
+            endColumn: word.startColumn
+        });
+        
+        // Check if we are after a keyword that expects a table name
+        const isTableContext = textUntilPosition.match(/(FROM|JOIN|UPDATE|INTO)\s+$/i);
+
+        const suggestions: any[] = [];
+
+        // Add Tables from Datasets
+        datasets.forEach(dataset => {
+          // Root tables
+          dataset.tables.forEach(table => {
+            suggestions.push({
+              label: table.name,
+              kind: monaco.languages.CompletionItemKind.Class,
+              insertText: table.name,
+              detail: `Table (${dataset.name})`,
+              // Boost priority if in table context
+              sortText: isTableContext ? '0_' + table.name : '1_' + table.name,
+              range: range
+            });
+          });
+          
+          // Folder tables
+          dataset.folders.forEach(folder => {
+            folder.tables.forEach(table => {
+              suggestions.push({
+                label: table.name,
+                kind: monaco.languages.CompletionItemKind.Class,
+                insertText: table.name,
+                detail: `Table (${dataset.name}/${folder.name})`,
+                sortText: isTableContext ? '0_' + table.name : '1_' + table.name,
+                range: range
+              });
+            });
+          });
+        });
+
+        // Add SQL Keywords (Basic set)
+        // If we are definitely expecting a table, we might still want keywords (e.g. subquery SELECT), 
+        // but tables should come first.
+        const keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'LIMIT', 'INSERT', 'UPDATE', 'DELETE', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'ON', 'AS', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'];
+        keywords.forEach(kw => {
+          suggestions.push({
+            label: kw,
+            kind: monaco.languages.CompletionItemKind.Keyword,
+            insertText: kw,
+            sortText: '2_' + kw, // Lower priority than tables
+            range: range
+          });
+        });
+
+        return { suggestions: suggestions };
+      }
+    });
+  };
+
   return (
     <div className="flex flex-col h-[calc(100vh-250px)]">
       {/* Query Toolbar */}
@@ -97,6 +178,7 @@ export default function QueryEditor({
             defaultLanguage="sql"
             value={sql}
             onChange={(value) => setSql(value || '')}
+            onMount={handleEditorDidMount}
             options={{
               minimap: { enabled: false },
               fontSize: 14,

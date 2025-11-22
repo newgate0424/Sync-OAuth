@@ -1543,9 +1543,9 @@ function DatabasePageContent() {
             executeQueryForTable={executeQueryForTable}
             fetchDatasets={fetchDatasets}
             showToast={showToast}
-            sql={query}
-            setSql={setQuery}
-            isQueryRunning={loading}
+            sql={sql}
+            setSql={setSql}
+            isQueryRunning={isQueryRunning}
             handleRunQuery={handleRunQuery}
             setShowSaveQueryDialog={setShowSaveQueryDialog}
             savedQueries={savedQueries}
@@ -1553,6 +1553,7 @@ function DatabasePageContent() {
             handleDeleteSavedQuery={handleDeleteSavedQuery}
             queryError={queryError}
             queryTabResult={queryTabResult}
+            datasets={datasets}
           />
         ) : (
           <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex items-center justify-center">

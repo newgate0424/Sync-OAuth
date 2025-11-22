@@ -1,7 +1,7 @@
 import React from 'react';
 import { Search, X, RefreshCw, Table2, Folder as FolderIcon, Database } from 'lucide-react';
 import QueryEditor from './QueryEditor';
-import { SavedQuery } from '../../types/database';
+import { SavedQuery, Dataset } from '../../types/database';
 
 interface TableViewProps {
   selectedTable: { dataset: string; table: string; folder?: string; folderName?: string };
@@ -26,6 +26,7 @@ interface TableViewProps {
   executeQueryForTable: (dataset: string, table: string, page?: number, limit?: number) => Promise<void>;
   fetchDatasets: () => Promise<void>;
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void;
+  datasets: Dataset[];
   
   // QueryEditor Props
   sql: string;
@@ -72,7 +73,8 @@ export default function TableView({
   handleLoadSavedQuery,
   handleDeleteSavedQuery,
   queryError,
-  queryTabResult
+  queryTabResult,
+  datasets
 }: TableViewProps) {
   return (
     <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col min-w-0">
@@ -636,6 +638,7 @@ export default function TableView({
             handleDeleteSavedQuery={handleDeleteSavedQuery}
             queryError={queryError}
             queryTabResult={queryTabResult}
+            datasets={datasets}
           />
         )}
       </div>
