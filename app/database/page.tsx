@@ -21,7 +21,7 @@ function DatabasePageContent() {
   const [queryResult, setQueryResult] = useState<any>(null);
   const [showDialog, setShowDialog] = useState<{ type: string; dataset?: string; folder?: string; oldName?: string } | null>(null);
   const [dialogInput, setDialogInput] = useState('');
-  const [showCreateTableSlide, setShowCreateTableSlide] = useState<{ dataset: string; folder: string } | null>(null);
+  const [showCreateTableSlide, setShowCreateTableSlide] = useState<{ dataset: string; folder: string; mode?: 'create' | 'edit'; tableName?: string } | null>(null);
   const [createTableStep, setCreateTableStep] = useState(1);
   const [sheetUrl, setSheetUrl] = useState('');
   const [spreadsheetInfo, setSpreadsheetInfo] = useState<any>(null);
@@ -40,6 +40,7 @@ function DatabasePageContent() {
   const [syncProgress, setSyncProgress] = useState<{ [key: string]: { status: 'syncing' | 'success' | 'error', message?: string } }>({});
   const [tableSyncLoading, setTableSyncLoading] = useState<{ [key: string]: boolean }>({});
   const [startRow, setStartRow] = useState(1);
+  const [endColumn, setEndColumn] = useState(''); // New state for end column
   const [hasHeader, setHasHeader] = useState(true);
   const [dbType, setDbType] = useState<'mysql' | 'postgresql'>('postgresql');
   const [syncConfig, setSyncConfig] = useState<any>(null);
@@ -649,15 +650,16 @@ function DatabasePageContent() {
     setDialogInput('');
   };
 
-  const handleSheetUrlSubmit = async () => {
-    if (!sheetUrl.trim()) return;
+  const handleSheetUrlSubmit = async (urlOverride?: string) => {
+    const urlToUse = typeof urlOverride === 'string' ? urlOverride : sheetUrl;
+    if (!urlToUse.trim()) return;
     
     setSyncLoading(true);
     try {
       const response = await fetch('/api/sheets-info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spreadsheetUrl: sheetUrl }),
+        body: JSON.stringify({ spreadsheetUrl: urlToUse }),
       });
       const data = await response.json();
       
@@ -673,6 +675,44 @@ function DatabasePageContent() {
     setSyncLoading(false);
   };
 
+  const handleEditTable = async (dataset: string, table: string, folder?: string) => {
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`/api/sync-config?tableName=${table}`);
+      if (!res.ok) throw new Error('Failed to fetch config');
+      const config = await res.json();
+
+      setStartRow(config.start_row || 1);
+      setEndColumn(config.end_column || '');
+      setHasHeader(config.has_header === 1 || config.has_header === true || config.has_header === '1' || config.has_header === 'true');
+      setTableName(table);
+      
+      const url = `https://docs.google.com/spreadsheets/d/${config.spreadsheet_id}`;
+      setSheetUrl(url);
+      
+      // Fetch spreadsheet info
+      await handleSheetUrlSubmit(url);
+      
+      setSelectedSheet(config.sheet_name);
+      
+      // Go to Step 2
+      setCreateTableStep(2);
+      
+      setShowCreateTableSlide({ 
+        dataset, 
+        folder: folder || '', 
+        mode: 'edit', 
+        tableName: table 
+      });
+
+    } catch (error) {
+      showToast('Error loading table config', 'error');
+      console.error(error);
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
   const handleSheetSelect = async () => {
     if (!selectedSheet || !spreadsheetInfo) return;
     
@@ -685,6 +725,7 @@ function DatabasePageContent() {
           spreadsheetId: spreadsheetInfo.spreadsheetId,
           sheetName: selectedSheet,
           startRow: parseInt(String(startRow)),
+          endColumn: endColumn.trim().toUpperCase(), // Pass endColumn
           hasHeader
         }),
       });
@@ -719,7 +760,10 @@ function DatabasePageContent() {
           sheetName: selectedSheet,
           schema: sheetSchema.schema,
           startRow: parseInt(String(startRow)),
-          hasHeader
+          endColumn: endColumn.trim().toUpperCase(), // Pass endColumn
+          hasHeader,
+          mode: showCreateTableSlide.mode, // Pass mode
+          originalTableName: showCreateTableSlide.mode === 'edit' ? showCreateTableSlide.tableName : undefined
         }),
       });
       const data = await response.json();
@@ -729,6 +773,7 @@ function DatabasePageContent() {
         await handleSyncData();
         setShowCreateTableSlide(null);
         setStartRow(1);
+        setEndColumn(''); // Reset endColumn
         setHasHeader(true);
         setCreateTableStep(1);
         setSheetUrl('');
@@ -736,6 +781,7 @@ function DatabasePageContent() {
         setSheetSchema(null);
         setTableName('');
         fetchDatasets();
+        showToast(showCreateTableSlide.mode === 'edit' ? 'แก้ไขตารางเรียบร้อยแล้ว' : 'สร้างตารางเรียบร้อยแล้ว', 'success');
       } else {
         showToast(data.error || 'ไม่สามารถสร้างตารางได้', 'error');
       }
@@ -1260,6 +1306,7 @@ function DatabasePageContent() {
         setSelectedTable={setSelectedTable}
         createFolder={createFolder}
         createTable={createTable}
+        editTable={handleEditTable}
         renameFolder={renameFolder}
         deleteFolder={deleteFolder}
         deleteTable={deleteTable}
@@ -1657,7 +1704,9 @@ function DatabasePageContent() {
           />
           <div className="fixed right-0 top-0 h-full w-full md:w-1/2 bg-white shadow-2xl z-50 transform transition-transform duration-300 overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-800">สร้างตารางจาก Google Sheets</h2>
+              <h2 className="text-xl font-bold text-gray-800">
+                {showCreateTableSlide.mode === 'edit' ? 'แก้ไขตาราง' : 'สร้างตารางจาก Google Sheets'}
+              </h2>
               <button
                 onClick={() => setShowCreateTableSlide(null)}
                 className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -1727,7 +1776,7 @@ function DatabasePageContent() {
                   )}
 
                   <button
-                    onClick={handleSheetUrlSubmit}
+                    onClick={() => handleSheetUrlSubmit()}
                     disabled={!sheetUrl.trim() || syncLoading}
                     className="w-full px-4 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
                   >
@@ -1758,16 +1807,29 @@ function DatabasePageContent() {
                     </select>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">แถวเริ่มต้นที่จะอ่านข้อมูล</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={startRow}
-                      onChange={(e) => setStartRow(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <p className="text-xs text-gray-500">ระบุแถวที่เริ่มต้นอ่านข้อมูล (เริ่มจาก 1)</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">แถวเริ่มต้น (Start Row)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={startRow}
+                        onChange={(e) => setStartRow(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-xs text-gray-500">เริ่มอ่านจากแถวที่ระบุ</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">คอลัมน์สุดท้าย (End Column)</label>
+                      <input
+                        type="text"
+                        value={endColumn}
+                        onChange={(e) => setEndColumn(e.target.value.toUpperCase())}
+                        placeholder="เช่น Z, AA"
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-xs text-gray-500">ว่างไว้เพื่ออ่านทั้งหมด</p>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-3 p-4 bg-blue-50 rounded-lg border border-blue-200">

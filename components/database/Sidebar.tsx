@@ -22,6 +22,7 @@ interface SidebarProps {
   
   createFolder: (dataset: string) => void;
   createTable: (dataset: string, folder: string) => void;
+  editTable: (dataset: string, table: string, folder?: string) => void;
   renameFolder: (dataset: string, folder: string) => void;
   deleteFolder: (dataset: string, folderId: string) => void;
   deleteTable: (dataset: string, folder: string, table: string) => void;
@@ -52,6 +53,7 @@ export default function Sidebar({
   setSelectedTable,
   createFolder,
   createTable,
+  editTable,
   renameFolder,
   deleteFolder,
   deleteTable,
@@ -319,6 +321,16 @@ export default function Sidebar({
                                       </button>
                                       <button
                                         onClick={() => {
+                                          editTable(dataset.name, table.name, folder.name);
+                                          setOpenMenu(null);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                      >
+                                        <Edit2 className="w-4 h-4" />
+                                        แก้ไขตาราง
+                                      </button>
+                                      <button
+                                        onClick={() => {
                                           deleteTable(dataset.name, folder.name, table.name);
                                           setOpenMenu(null);
                                         }}
@@ -369,6 +381,16 @@ export default function Sidebar({
                         {/* Context Menu */}
                         {openMenu?.type === 'table' && openMenu?.name === table.name && (
                           <div ref={menuRef} className="absolute right-0 top-8 mt-1 w-40 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                            <button
+                              onClick={() => {
+                                editTable(dataset.name, table.name);
+                                setOpenMenu(null);
+                              }}
+                              className="w-full px-3 py-2 text-sm text-left hover:bg-gray-50 text-gray-700 flex items-center gap-2"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                              แก้ไขตาราง
+                            </button>
                             <button
                               onClick={() => {
                                 setShowDialog({ type: 'deleteTableDirect', dataset: dataset.name, oldName: table.name });

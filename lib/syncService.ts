@@ -51,6 +51,16 @@ function calculateChecksumFromComponents(rowCount: number, firstRow: any[], midd
   return crypto.createHash('md5').update(dataToHash).digest('hex');
 }
 
+function columnToNumber(col: string): number {
+  if (!col) return 0;
+  const cleanCol = col.replace(/[^A-Z]/g, '').toUpperCase();
+  let num = 0;
+  for (let i = 0; i < cleanCol.length; i++) {
+    num = num * 26 + (cleanCol.charCodeAt(i) - 64);
+  }
+  return num;
+}
+
 export interface SyncParams {
   dataset: string;
   tableName: string;
@@ -333,7 +343,7 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
         console.log(`[Sync Service] Fetching header from row ${configStartRow}...`);
         const headerResponse = await fetchWithRetry(() => sheets.spreadsheets.values.get({
           spreadsheetId: config.spreadsheet_id,
-          range: `${config.sheet_name}!A${configStartRow}:ZZ${configStartRow}`,
+          range: `${config.sheet_name}!A${configStartRow}:${config.end_column || 'ZZ'}${configStartRow}`,
         }));
         const headerRows = headerResponse.data.values || [];
         
@@ -353,7 +363,7 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
       
       while (true) {
         const endRow = currentFetchRow + CHUNK_SIZE - 1;
-        const range = `${config.sheet_name}!A${currentFetchRow}:ZZ${endRow}`;
+        const range = `${config.sheet_name}!A${currentFetchRow}:${config.end_column || 'ZZ'}${endRow}`;
         
         console.log(`[Sync Service] Fetching chunk: ${range}`);
         
@@ -390,28 +400,39 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
           const validHeaderIndices: number[] = [];
           const validHeaders: string[] = [];
           
-          batchHeaders.forEach((h: string, i: number) => {
+          // Determine iteration limit
+          let loopLimit = batchHeaders.length;
+          if (config.end_column) {
+            loopLimit = columnToNumber(config.end_column);
+          }
+
+          for (let i = 0; i < loopLimit; i++) {
+             const h = batchHeaders[i];
              const sanitized = sanitizeHeader(h);
-             if (tableColumns.includes(sanitized)) {
+             
+             // Try to match by name first (if header exists)
+             if (h !== undefined && tableColumns.includes(sanitized)) {
                  validHeaderIndices.push(i);
                  validHeaders.push(sanitized);
              } else {
+                 // Fallback to positional mapping (column_1, column_2, ...)
                  const generic = `column_${i+1}`;
                  if (tableColumns.includes(generic)) {
                      validHeaderIndices.push(i);
                      validHeaders.push(generic);
                  }
              }
-          });
+          }
 
           if (validHeaders.length === 0 && !configHasHeader) {
-             batchHeaders.forEach((_: any, i: number) => {
+             // If no headers found yet and no config header, try purely positional up to limit
+             for (let i = 0; i < loopLimit; i++) {
                  const generic = `column_${i+1}`;
                  if (tableColumns.includes(generic)) {
                      validHeaderIndices.push(i);
                      validHeaders.push(generic);
                  }
-             });
+             }
           }
 
           if (validHeaders.length > 0) {

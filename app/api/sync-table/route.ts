@@ -25,12 +25,33 @@ export async function POST(request: NextRequest) {
   try {
     const pool = await ensureDbInitialized();
     const body = await request.json();
-    const { dataset, folderName, tableName, spreadsheetId, sheetName, schema } = body;
+    const { dataset, folderName, tableName, spreadsheetId, sheetName, schema, mode, originalTableName } = body;
     const startRow = parseInt(body.startRow) || 1;
+    const endColumn = body.endColumn || null;
     const hasHeader = body.hasHeader !== undefined ? body.hasHeader : true;
     
     if (!dataset || !tableName || !spreadsheetId || !sheetName || !schema) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    // Handle Edit Mode
+    if (mode === 'edit') {
+        if (originalTableName && originalTableName !== tableName) {
+            // Renaming: Drop old table and config
+            await pool.query(`DROP TABLE IF EXISTS "${originalTableName}"`);
+            await pool.query(`DELETE FROM sync_config WHERE table_name = $1`, [originalTableName]);
+            
+            // Also remove from folder_tables if it was there (MongoDB)
+            const mongoDb = await getMongoDb();
+            const folder = await mongoDb.collection('folders').findOne({ name: folderName });
+            if (folder) {
+                await mongoDb.collection('folder_tables').deleteOne({ folder_id: folder._id, table_name: originalTableName });
+            }
+
+        } else {
+            // Same name: Drop to recreate
+            await pool.query(`DROP TABLE IF EXISTS "${tableName}"`);
+        }
     }
 
     // สร้างตารางตาม schema
@@ -51,21 +72,33 @@ export async function POST(request: NextRequest) {
     const settings = await mongoDb.collection('settings').findOne({ key: 'database_connection' });
     const dbType = settings?.dbType || 'mysql';
 
+    // Ensure end_column exists in sync_config
+    try {
+      const alterSql = "ALTER TABLE sync_config ADD COLUMN end_column VARCHAR(10) NULL";
+      await pool.query(alterSql);
+    } catch (e: any) {
+      // Ignore if column already exists
+      // MySQL: 1060 (ER_DUP_FIELDNAME), Postgres: 42701 (duplicate_column)
+      if (e.code !== 'ER_DUP_FIELDNAME' && e.code !== '42701') {
+         console.warn('Warning: Could not add end_column to sync_config:', e.message);
+      }
+    }
+
     // บันทึก sync config พร้อม startRow และ hasHeader
     if (dbType === 'mysql') {
       await pool.query(
-        `INSERT INTO sync_config (table_name, spreadsheet_id, sheet_name, folder_name, dataset_name, start_row, has_header) 
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE spreadsheet_id = VALUES(spreadsheet_id), sheet_name = VALUES(sheet_name), start_row = VALUES(start_row), has_header = VALUES(has_header)`,
-        [tableName, spreadsheetId, sheetName, folderName || '', dataset, startRow, hasHeader ? 1 : 0]
+        `INSERT INTO sync_config (table_name, spreadsheet_id, sheet_name, folder_name, dataset_name, start_row, end_column, has_header) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE spreadsheet_id = VALUES(spreadsheet_id), sheet_name = VALUES(sheet_name), start_row = VALUES(start_row), end_column = VALUES(end_column), has_header = VALUES(has_header)`,
+        [tableName, spreadsheetId, sheetName, folderName || '', dataset, startRow, endColumn, hasHeader ? 1 : 0]
       );
     } else {
       await pool.query(
-        `INSERT INTO sync_config (table_name, spreadsheet_id, sheet_name, folder_name, dataset_name, start_row, has_header) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO sync_config (table_name, spreadsheet_id, sheet_name, folder_name, dataset_name, start_row, end_column, has_header) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (table_name) 
-         DO UPDATE SET spreadsheet_id = $2, sheet_name = $3, start_row = $6, has_header = $7`,
-        [tableName, spreadsheetId, sheetName, folderName || '', dataset, startRow, hasHeader]
+         DO UPDATE SET spreadsheet_id = $2, sheet_name = $3, start_row = $6, end_column = $7, has_header = $8`,
+        [tableName, spreadsheetId, sheetName, folderName || '', dataset, startRow, endColumn, hasHeader]
       );
     }
 

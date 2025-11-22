@@ -1,12 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getGoogleSheetsClient } from '@/lib/googleSheets';
 
+function columnToNumber(col: string): number {
+  if (!col) return 0;
+  const cleanCol = col.replace(/[^A-Z]/g, '').toUpperCase();
+  let num = 0;
+  for (let i = 0; i < cleanCol.length; i++) {
+    num = num * 26 + (cleanCol.charCodeAt(i) - 64);
+  }
+  return num;
+}
+
 // POST - ดึงข้อมูลจาก sheet เพื่อดู schema
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { spreadsheetId, sheetName } = body;
     const startRow = parseInt(body.startRow) || 1;
+    const endColumn = body.endColumn || 'ZZ'; // Default to ZZ if not provided
     const hasHeader = body.hasHeader !== undefined ? body.hasHeader : true;
     
     if (!spreadsheetId || !sheetName) {
@@ -26,7 +37,7 @@ export async function POST(request: NextRequest) {
     const endRow = startRow + 1000; 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A${startRow}:ZZ${endRow}`,
+      range: `${sheetName}!A${startRow}:${endColumn}${endRow}`,
     });
 
     const rows = response.data.values || [];
@@ -35,19 +46,41 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No data found in sheet' }, { status: 404 });
     }
 
-    let headers: string[];
+    let headers: string[] = [];
     let dataRows: any[][];
     
+    // Calculate target column count based on endColumn if provided
+    const targetColCount = body.endColumn ? columnToNumber(body.endColumn) : (rows[0]?.length || 0);
+
     if (hasHeader) {
       // แถวแรกเป็น header
-      headers = rows[0];
+      const rawHeaders = rows[0] || [];
+      
+      // Pad headers to match targetColCount
+      for (let i = 0; i < targetColCount; i++) {
+          if (i < rawHeaders.length && rawHeaders[i]) {
+              headers.push(rawHeaders[i]);
+          } else {
+              headers.push(`column_${i + 1}`);
+          }
+      }
+      
       dataRows = rows.slice(1);
     } else {
       // สร้าง header อัตโนมัติ
-      const numColumns = rows[0]?.length || 10;
+      const numColumns = Math.max(rows[0]?.length || 0, targetColCount || 10);
       headers = Array.from({ length: numColumns }, (_, i) => `column_${i + 1}`);
       dataRows = rows;
     }
+
+    // Pad dataRows for preview consistency
+    dataRows = dataRows.map(row => {
+        const newRow = [...row];
+        while (newRow.length < headers.length) {
+            newRow.push(null);
+        }
+        return newRow;
+    });
 
     // สร้าง schema โดยวิเคราะห์ชนิดข้อมูล
     const schema = headers.map((header: string, index: number) => {
