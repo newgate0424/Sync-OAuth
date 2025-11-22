@@ -204,19 +204,19 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
           ? `${config.sheet_name}!A${configStartRow}:ZZ${configStartRow}`
           : `${config.sheet_name}!A${dataStartRow}:ZZ${dataStartRow}`;
         
-        const headerResponse = await fetchWithRetry(() => sheets.spreadsheets.values.get({
-          spreadsheetId: config.spreadsheet_id,
-          range: headerRange,
-        }));
-        
         // นับจำนวนแถวโดยดึงคอลัมน์แรกเท่านั้น
         const allRowsRange = `${config.sheet_name}!A:A`;
-        const countResponse = await fetchWithRetry(() => sheets.spreadsheets.values.get({
+
+        // Optimize: Combine Header and Row Count check into one batchGet call
+        const batchCheckResponse = await fetchWithRetry(() => sheets.spreadsheets.values.batchGet({
           spreadsheetId: config.spreadsheet_id,
-          range: allRowsRange,
+          ranges: [headerRange, allRowsRange],
         }));
+
+        const headerRows = batchCheckResponse.data.valueRanges?.[0]?.values || [];
+        const allRows = batchCheckResponse.data.valueRanges?.[1]?.values || [];
         
-        const totalSheetRows = (countResponse.data.values || []).length;
+        const totalSheetRows = allRows.length;
         const currentRowCount = configHasHeader 
           ? Math.max(0, totalSheetRows - configStartRow)
           : Math.max(0, totalSheetRows - configStartRow + 1);
@@ -254,7 +254,7 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
           }));
           
           const sampleRows = sampleResponse.data.valueRanges?.flatMap(vr => vr.values || []) || [];
-          const newChecksum = calculateChecksum([headerResponse.data.values?.[0] || [], ...sampleRows]);
+          const newChecksum = calculateChecksum([headerRows[0] || [], ...sampleRows]);
           
           console.log(`[Sync Service] Checksum Comparison: Old=${lastChecksum}, New=${newChecksum}`);
 
