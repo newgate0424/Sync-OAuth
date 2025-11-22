@@ -62,6 +62,8 @@ function DatabasePageContent() {
 
   // Selected Dataset State
   const [selectedDataset, setSelectedDataset] = useState<Dataset | null>(null);
+  const [isSchemaTextMode, setIsSchemaTextMode] = useState(false);
+  const [schemaText, setSchemaText] = useState('');
 
   // Save activeTab to localStorage whenever it changes
   const handleTabChange = (tab: 'schema' | 'details' | 'preview' | 'query') => {
@@ -749,6 +751,39 @@ function DatabasePageContent() {
     
     setSyncLoading(true);
     try {
+      // Prepare schema
+      let finalSchema = sheetSchema.schema;
+      if (isSchemaTextMode) {
+        try {
+          const lines = schemaText.split(/[\n,]+/).map(l => l.trim()).filter(l => l);
+          finalSchema = lines.map((line: string) => {
+            const parts = line.split(':');
+            const name = parts[0].trim();
+            const type = parts.length > 1 ? parts[1].trim() : 'VARCHAR(255)';
+            
+            if (!name) throw new Error('Invalid format');
+            
+            // Map types if needed
+            let mappedType = type.toUpperCase();
+            if (mappedType === 'STRING') mappedType = 'VARCHAR(255)';
+            
+            // Find original column if exists to keep originalName
+            const existing = sheetSchema.schema.find((s: any) => s.name === name);
+            
+            return {
+              name: name.toLowerCase(),
+              originalName: existing ? existing.originalName : name,
+              type: mappedType,
+              nullable: true
+            };
+          });
+        } catch (e) {
+          showToast('รูปแบบ Schema ไม่ถูกต้อง (ต้องเป็น name:TYPE)', 'error');
+          setSyncLoading(false);
+          return;
+        }
+      }
+
       const response = await fetch('/api/sync-table', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -758,7 +793,7 @@ function DatabasePageContent() {
           tableName: tableName.trim(),
           spreadsheetId: spreadsheetInfo.spreadsheetId,
           sheetName: selectedSheet,
-          schema: sheetSchema.schema,
+          schema: finalSchema,
           startRow: parseInt(String(startRow)),
           endColumn: endColumn.trim().toUpperCase(), // Pass endColumn
           hasHeader,
@@ -1286,7 +1321,45 @@ function DatabasePageContent() {
     setSelectedQueryId(query.id);
   };
 
-
+  const toggleSchemaMode = () => {
+    if (isSchemaTextMode) {
+      // Switch to UI Mode: Parse text
+      try {
+        const lines = schemaText.split(/[\n,]+/).map(l => l.trim()).filter(l => l);
+        const newSchema = lines.map(line => {
+          const parts = line.split(':');
+          const name = parts[0].trim();
+          const type = parts.length > 1 ? parts[1].trim() : 'VARCHAR(255)';
+          
+          if (!name) throw new Error('Invalid format');
+          
+          // Map types if needed
+          let mappedType = type.toUpperCase();
+          if (mappedType === 'STRING') mappedType = 'VARCHAR(255)';
+          
+          // Find original column if exists to keep originalName
+          const existing = sheetSchema.schema.find((s: any) => s.name === name);
+          
+          return {
+            name: name.toLowerCase(),
+            originalName: existing ? existing.originalName : name,
+            type: mappedType,
+            nullable: true
+          };
+        });
+        
+        setSheetSchema({ ...sheetSchema, schema: newSchema });
+        setIsSchemaTextMode(false);
+      } catch (e) {
+        showToast('รูปแบบ Schema ไม่ถูกต้อง (ต้องเป็น name:TYPE)', 'error');
+      }
+    } else {
+      // Switch to Text Mode: Stringify schema
+      const text = sheetSchema.schema.map((col: any) => `${col.name}:${col.type}`).join(',\n');
+      setSchemaText(text);
+      setIsSchemaTextMode(true);
+    }
+  };
 
   return (
     <div className="flex gap-4 h-[calc(100vh-8rem)]">
@@ -1885,6 +1958,30 @@ function DatabasePageContent() {
                     />
                   </div>
 
+                  <div className="flex justify-end mb-2">
+                    <button
+                      onClick={toggleSchemaMode}
+                      className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                    >
+                      {isSchemaTextMode ? <Table2 className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+                      {isSchemaTextMode ? 'Switch to Table View' : 'Edit as Text'}
+                    </button>
+                  </div>
+
+                  {isSchemaTextMode ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={schemaText}
+                        onChange={(e) => setSchemaText(e.target.value)}
+                        className="w-full h-64 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                        placeholder="column_name:TYPE, ..."
+                      />
+                      <p className="text-xs text-gray-500">
+                        Format: column_name:TYPE (separated by comma or newline)<br/>
+                        Supported Types: INT, DECIMAL(10,2), VARCHAR(255), TEXT, DATETIME, DATE
+                      </p>
+                    </div>
+                  ) : (
                   <div className="border border-gray-200 rounded-lg overflow-hidden">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50">
@@ -1956,6 +2053,7 @@ function DatabasePageContent() {
                       </tbody>
                     </table>
                   </div>
+                  )}
 
                   {/* Preview Data */}
                   <div className="border border-gray-200 rounded-lg p-4">
