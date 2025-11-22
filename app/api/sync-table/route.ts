@@ -20,6 +20,39 @@ function calculateChecksum(rows: any[][]): string {
   return crypto.createHash('md5').update(dataToHash).digest('hex');
 }
 
+// GET - Sync ตารางผ่าน URL
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const tableName = searchParams.get('table');
+    const dataset = searchParams.get('dataset') || 'default';
+    const forceSync = searchParams.get('force') === 'true';
+
+    if (!tableName) {
+      return NextResponse.json({ error: 'Table name is required' }, { status: 400 });
+    }
+
+    const result = await performSync({
+      dataset,
+      tableName,
+      forceSync
+    });
+
+    if (!result.success) {
+      return NextResponse.json({ error: result.message || result.error }, { status: 500 });
+    }
+
+    return NextResponse.json({ 
+      message: 'Sync completed successfully',
+      stats: result.stats
+    });
+
+  } catch (error: any) {
+    console.error('Sync error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
 // POST - สร้างตารางและ sync ข้อมูล
 export async function POST(request: NextRequest) {
   try {

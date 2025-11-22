@@ -94,6 +94,33 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     
     const pool = await ensureDbInitialized();
 
+    // Check if sync is already running for this table
+    let runningSync;
+    if (pool.getDatabaseType() === 'postgresql') {
+      runningSync = await pool.query(
+        `SELECT id, started_at FROM sync_logs 
+         WHERE table_name = $1 AND status = 'running' 
+         AND started_at > NOW() - INTERVAL '10 minutes'`,
+        [tableName]
+      );
+    } else {
+      runningSync = await pool.query(
+        `SELECT id, started_at FROM sync_logs 
+         WHERE table_name = ? AND status = 'running' 
+         AND started_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)`,
+        [tableName]
+      );
+    }
+
+    if (runningSync.rows.length > 0) {
+      console.log(`[Sync Service] ⚠️ Sync already running for ${tableName} (Job ID: ${runningSync.rows[0].id}), skipping.`);
+      return {
+        success: false,
+        message: 'Sync already in progress',
+        error: 'Sync already in progress'
+      };
+    }
+
     // ดึง sync config
     const configResult = await pool.query(
       `SELECT * FROM sync_config WHERE table_name = $1`,

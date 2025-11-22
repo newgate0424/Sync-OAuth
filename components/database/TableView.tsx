@@ -187,25 +187,6 @@ export default function TableView({
             <RefreshCw className={`w-4 h-4 ${selectedTable && tableSyncLoading[`${selectedTable.dataset}.${selectedTable.table}`] ? 'animate-spin' : ''}`} />
             Sync
           </button>
-          <button 
-            onClick={async () => {
-              if (!selectedTable) return;
-              try {
-                const tokenRes = await fetch('/api/cron-token');
-                const { token } = await tokenRes.json();
-                const baseUrl = window.location.origin;
-                const syncUrl = `${baseUrl}/api/sync-cron?token=${token}&dataset=${selectedTable.dataset}&table=${selectedTable.table}`;
-                navigator.clipboard.writeText(syncUrl);
-                showToast('คัดลอก Sync URL สำเร็จ! สามารถนำไปใช้กับ Cron Job ได้', 'success');
-              } catch (error) {
-                showToast('เกิดข้อผิดพลาดในการดึง token', 'error');
-              }
-            }}
-            disabled={!selectedTable}
-            className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded hover:bg-gray-50 text-sm disabled:bg-gray-200"
-          >
-            Copy Sync URL
-          </button>
         </div>
 
         {/* Search Box */}

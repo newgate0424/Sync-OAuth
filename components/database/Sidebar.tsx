@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Database, Table2, ChevronRight, ChevronDown, Search, MoreVertical, Folder, FolderPlus, Edit2, Trash2, FilePlus, X, RefreshCw, Eye } from 'lucide-react';
+import { Database, Table2, ChevronRight, ChevronDown, Search, MoreVertical, Folder, FolderPlus, Edit2, Trash2, FilePlus, X, RefreshCw, Eye, Link as LinkIcon } from 'lucide-react';
 import { Dataset, TableInfo } from '../../types/database';
 import { useRouter } from 'next/navigation';
 
@@ -231,6 +231,18 @@ export default function Sidebar({
                                 </button>
                                 <button
                                   onClick={() => {
+                                    const url = `${window.location.origin}/api/sync-folder?folder=${encodeURIComponent(folder.name)}&dataset=${encodeURIComponent(dataset.name)}`;
+                                    navigator.clipboard.writeText(url);
+                                    showToast('คัดลอกลิงก์ Sync เรียบร้อยแล้ว', 'success');
+                                    setOpenMenu(null);
+                                  }}
+                                  className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                >
+                                  <LinkIcon className="w-4 h-4" />
+                                  คัดลอกลิงก์ Sync
+                                </button>
+                                <button
+                                  onClick={() => {
                                     renameFolder(dataset.name, folder.name);
                                     setOpenMenu(null);
                                   }}
@@ -318,6 +330,18 @@ export default function Sidebar({
                                       >
                                         <Eye className="w-4 h-4" />
                                         Preview
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          const url = `${window.location.origin}/api/sync-table?table=${encodeURIComponent(table.name)}&dataset=${encodeURIComponent(dataset.name)}`;
+                                          navigator.clipboard.writeText(url);
+                                          showToast('คัดลอกลิงก์ Sync เรียบร้อยแล้ว', 'success');
+                                          setOpenMenu(null);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                      >
+                                        <LinkIcon className="w-4 h-4" />
+                                        คัดลอกลิงก์ Sync
                                       </button>
                                       <button
                                         onClick={() => {
