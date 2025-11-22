@@ -399,6 +399,11 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
           
           const validHeaderIndices: number[] = [];
           const validHeaders: string[] = [];
+          const usedDbColumns = new Set<string>();
+
+          // Filter out system columns to get data columns in order
+          // Note: tableColumns is now guaranteed to be ordered by ordinal_position from dbAdapter
+          const dataColumns = tableColumns.filter(c => c !== 'id' && c !== 'synced_at');
           
           // Determine iteration limit
           let loopLimit = batchHeaders.length;
@@ -409,18 +414,25 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
           for (let i = 0; i < loopLimit; i++) {
              const h = batchHeaders[i];
              const sanitized = sanitizeHeader(h);
+             let targetCol = '';
              
-             // Try to match by name first (if header exists)
+             // 1. Try to match by name first (if header exists)
              if (h !== undefined && tableColumns.includes(sanitized)) {
+                 targetCol = sanitized;
+             } 
+             // 2. Fallback to positional mapping (column_1, column_2, ...)
+             else if (tableColumns.includes(`column_${i+1}`)) {
+                 targetCol = `column_${i+1}`;
+             }
+             // 3. Fallback to positional mapping by index (for renamed columns)
+             else if (i < dataColumns.length) {
+                 targetCol = dataColumns[i];
+             }
+
+             if (targetCol && !usedDbColumns.has(targetCol)) {
                  validHeaderIndices.push(i);
-                 validHeaders.push(sanitized);
-             } else {
-                 // Fallback to positional mapping (column_1, column_2, ...)
-                 const generic = `column_${i+1}`;
-                 if (tableColumns.includes(generic)) {
-                     validHeaderIndices.push(i);
-                     validHeaders.push(generic);
-                 }
+                 validHeaders.push(targetCol);
+                 usedDbColumns.add(targetCol);
              }
           }
 

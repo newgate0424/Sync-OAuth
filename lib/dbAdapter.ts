@@ -277,7 +277,8 @@ class DatabaseAdapter {
       const result = await this.queryPostgreSQL(
         `SELECT column_name 
          FROM information_schema.columns 
-         WHERE table_name = $1`,
+         WHERE table_name = $1
+         ORDER BY ordinal_position`,
         [tableName]
       );
       return result.rows.map(r => r.column_name);
@@ -286,7 +287,8 @@ class DatabaseAdapter {
         `SELECT COLUMN_NAME 
          FROM INFORMATION_SCHEMA.COLUMNS 
          WHERE TABLE_SCHEMA = DATABASE() 
-         AND TABLE_NAME = ?`,
+         AND TABLE_NAME = ?
+         ORDER BY ORDINAL_POSITION`,
         [tableName]
       );
       return result.rows.map(r => r.COLUMN_NAME);
