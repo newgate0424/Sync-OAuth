@@ -85,17 +85,18 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     const pool = await ensureDbInitialized();
 
     // ดึง sync config
-    const configs = await pool.query(
-      'SELECT * FROM sync_config WHERE table_name = $1',
+    const configResult = await pool.query(
+      `SELECT * FROM sync_config WHERE table_name = $1`,
       [tableName]
     );
-
-    if (configs.rows.length === 0) {
-      throw new Error('Sync config not found');
+    const config = configResult.rows[0];
+    
+    if (!config) {
+      throw new Error(`Configuration not found for table: ${tableName}`);
     }
 
-    const config = configs.rows[0];
-    
+    console.log(`[Sync Service] Config loaded for ${tableName}: start_row=${config.start_row}, has_header=${config.has_header}`);
+
     // สร้าง log entry with complete info
     const logResult = await pool.query(
       `INSERT INTO sync_logs (status, table_name, folder_name, spreadsheet_id, sheet_name, started_at) 
@@ -107,8 +108,14 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
     const sheets = await getGoogleSheetsClient();
 
     // ใช้ค่า start_row และ has_header จาก config
-    const configStartRow = config.start_row || 1;
-    const configHasHeader = config.has_header !== undefined ? config.has_header : true;
+    // Fix: Ensure types are correct and handle potential casing issues
+    const rawStartRow = config.start_row !== undefined ? config.start_row : config.startRow;
+    const configStartRow = parseInt(String(rawStartRow || 1));
+    
+    const rawHasHeader = config.has_header !== undefined ? config.has_header : config.hasHeader;
+    // Handle MySQL 1/0 for boolean and string 'true'/'false'
+    const configHasHeader = rawHasHeader === 1 || rawHasHeader === true || rawHasHeader === '1' || rawHasHeader === 'true';
+    
     const dataStartRow = configHasHeader ? configStartRow + 1 : configStartRow;
 
     let driveModifiedTime: string | null = null;
@@ -318,7 +325,9 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
 
       // 3. Fetch Headers
       let headers: string[] = [];
-      let currentFetchRow = configStartRow;
+      // Fix: currentFetchRow should start exactly at configStartRow if no header, 
+      // or configStartRow + 1 if there is a header.
+      let currentFetchRow = configHasHeader ? configStartRow + 1 : configStartRow;
 
       if (configHasHeader) {
         console.log(`[Sync Service] Fetching header from row ${configStartRow}...`);
@@ -330,7 +339,7 @@ export async function performSync(params: SyncParams): Promise<SyncResult> {
         
         if (headerRows.length > 0) {
           headers = headerRows[0];
-          currentFetchRow++; // Move past header
+          // currentFetchRow is already set to configStartRow + 1 above
         } else {
           throw new Error('Header row not found');
         }
@@ -619,8 +628,13 @@ async function syncLargeTableWithCsv(
   let processedRows = 0;
   let chunk: any[] = [];
   // const CHUNK_SIZE = 5000; // Moved to dynamic calculation below
-  const configStartRow = config.start_row || 1;
-  const hasHeader = config.has_header !== undefined ? config.has_header : true;
+  
+  // Fix: Robust config reading
+  const rawStartRow = config.start_row !== undefined ? config.start_row : config.startRow;
+  const configStartRow = parseInt(String(rawStartRow || 1));
+  
+  const rawHasHeader = config.has_header !== undefined ? config.has_header : config.hasHeader;
+  const hasHeader = rawHasHeader === 1 || rawHasHeader === true || rawHasHeader === '1' || rawHasHeader === 'true';
   
   // For checksum
   let firstRow: any[] = [];
@@ -631,9 +645,8 @@ async function syncLargeTableWithCsv(
   // Let's just grab the first few, and update lastRow as we go.
   
   const parser = response.data.pipe(parse({
-    from_line: hasHeader ? configStartRow + 1 : configStartRow,
-    relax_quotes: true,
-    skip_empty_lines: true
+    from: hasHeader ? configStartRow + 1 : configStartRow,
+    relax_quotes: true
   }));
 
   // Get column names from DB to map CSV columns (assuming order matches or we just insert blindly)
@@ -662,6 +675,11 @@ async function syncLargeTableWithCsv(
   const insertSql = `INSERT INTO ${quotedTempTableName} (${columns.map(c => pool.quoteIdentifier(c)).join(',')}) VALUES `;
 
   for await (const record of parser) {
+    // Skip empty rows (which might be returned now that skip_empty_lines is false)
+    if (!record || record.length === 0 || record.every((cell: any) => !cell || String(cell).trim() === '')) {
+      continue;
+    }
+
     // record is an array of strings
     chunk.push(record);
     

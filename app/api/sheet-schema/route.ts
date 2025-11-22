@@ -4,7 +4,10 @@ import { getGoogleSheetsClient } from '@/lib/googleSheets';
 // POST - ดึงข้อมูลจาก sheet เพื่อดู schema
 export async function POST(request: NextRequest) {
   try {
-    const { spreadsheetId, sheetName, startRow = 1, hasHeader = true } = await request.json();
+    const body = await request.json();
+    const { spreadsheetId, sheetName } = body;
+    const startRow = parseInt(body.startRow) || 1;
+    const hasHeader = body.hasHeader !== undefined ? body.hasHeader : true;
     
     if (!spreadsheetId || !sheetName) {
       return NextResponse.json({ error: 'Spreadsheet ID and sheet name are required' }, { status: 400 });
@@ -17,7 +20,10 @@ export async function POST(request: NextRequest) {
     const headerRow = hasHeader ? startRow : null;
     
     // ดึงข้อมูลจาก sheet
-    const endRow = dataStartRow + 1000; // ดึง 1000 แถวหลัง header
+    // Fix: ถ้าไม่เอา header ต้องเริ่มดึงจาก startRow ตรงๆ
+    // ถ้าเอา header ต้องเริ่มดึงจาก startRow (ซึ่งเป็น header) แล้วข้อมูลจะตามมา
+    // ดังนั้น range ที่ดึงควรเริ่มจาก startRow เสมอ แล้วค่อยไป slice เอาใน code
+    const endRow = startRow + 1000; 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${sheetName}!A${startRow}:ZZ${endRow}`,

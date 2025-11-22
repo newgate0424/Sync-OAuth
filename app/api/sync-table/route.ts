@@ -24,7 +24,10 @@ function calculateChecksum(rows: any[][]): string {
 export async function POST(request: NextRequest) {
   try {
     const pool = await ensureDbInitialized();
-    const { dataset, folderName, tableName, spreadsheetId, sheetName, schema, startRow = 1, hasHeader = true } = await request.json();
+    const body = await request.json();
+    const { dataset, folderName, tableName, spreadsheetId, sheetName, schema } = body;
+    const startRow = parseInt(body.startRow) || 1;
+    const hasHeader = body.hasHeader !== undefined ? body.hasHeader : true;
     
     if (!dataset || !tableName || !spreadsheetId || !sheetName || !schema) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
