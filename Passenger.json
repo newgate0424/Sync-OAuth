@@ -1,0 +1,17 @@
+{
+  "name": "sheets-sync-app",
+  "version": "1.0.0",
+  "description": "Google Sheets Sync Manager",
+  "main": "app.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "dev": "next dev",
+    "build": "next build",
+    "test": "echo \"No tests specified\""
+  }
+}

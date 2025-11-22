@@ -1,0 +1,38 @@
+{
+  "name": "Plesk Deployment Configuration",
+  "version": "1.0.0",
+  "deployment": {
+    "platform": "Plesk Obsidian",
+    "nodejs_version": ">=18.0.0",
+    "startup_file": "app.js",
+    "application_mode": "production"
+  },
+  "environment": {
+    "NODE_ENV": "production",
+    "PORT": 3000
+  },
+  "scripts": {
+    "predeploy": "npm ci --production=false",
+    "deploy": "npm run build",
+    "postdeploy": "npm prune --production"
+  },
+  "files": {
+    "required": [
+      ".env",
+      "credentials.json"
+    ],
+    "generated": [
+      ".next/",
+      "node_modules/"
+    ]
+  },
+  "permissions": {
+    ".env": "600",
+    "credentials.json": "600",
+    "logs/": "755"
+  },
+  "health_check": {
+    "endpoint": "/api/health",
+    "expected_status": 200
+  }
+}

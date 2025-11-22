@@ -1,0 +1,45 @@
+# Plesk Deployment - Files to ignore
+# These files won't be uploaded during Git deployment
+
+# Development files
+node_modules/
+.next/
+.git/
+.github/
+
+# Environment files (upload manually)
+.env
+.env.local
+.env.*.local
+
+# Credentials (upload manually with correct permissions)
+credentials.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build files
+dist/
+build/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

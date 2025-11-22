@@ -1,0 +1,3 @@
+# Application restart trigger
+# Touch this file to restart the Passenger application
+# Command: touch tmp/restart.txt
