@@ -133,6 +133,7 @@ export async function GET() {
       name: databaseName,
       tables: tablesWithInfo,
       expanded: false,
+      folders: []
     }];
     
     return NextResponse.json(datasets, {

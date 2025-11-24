@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { FileText, Search, RefreshCw, CheckCircle, XCircle, Clock, AlertCircle } from 'lucide-react';
+import { FileText, Search, RefreshCw, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface SyncLog {
   id: number;
@@ -34,25 +34,44 @@ function LogPageContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalLogs, setTotalLogs] = useState(0);
+  const logsPerPage = 50;
 
   useEffect(() => {
-    fetchLogs();
+    fetchLogs(1);
     
-    // Auto-refresh every 5 seconds
-    const interval = setInterval(fetchLogs, 5000);
+    // Auto-refresh every 30 seconds (increased from 5s to reduce load)
+    const interval = setInterval(() => fetchLogs(currentPage), 30000);
     return () => clearInterval(interval);
   }, []);
 
-  const fetchLogs = async (showRefresh = false) => {
+  // Effect to refetch when page changes
+  useEffect(() => {
+    fetchLogs(currentPage);
+  }, [currentPage]);
+
+  const fetchLogs = async (page = 1, showRefresh = false) => {
     try {
       if (showRefresh) setRefreshing(true);
       
-      const response = await fetch('/api/sync-logs', {
+      const response = await fetch(`/api/sync-logs?page=${page}&limit=${logsPerPage}`, {
         headers: { 'Cache-Control': 'no-cache' },
       });
+      
       if (response.ok) {
         const data = await response.json();
-        setSyncLogs(data.slice(0, 50));
+        if (data.logs) {
+          setSyncLogs(data.logs);
+          setTotalPages(data.pagination.totalPages);
+          setTotalLogs(data.pagination.totalLogs);
+        } else {
+          // Fallback for old API response structure
+          setSyncLogs(Array.isArray(data) ? data : []);
+        }
       }
       
       if (loading) setLoading(false);
@@ -63,6 +82,12 @@ function LogPageContent() {
       if (showRefresh) {
         setTimeout(() => setRefreshing(false), 500);
       }
+    }
+  };
+
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage);
     }
   };
 
@@ -88,7 +113,7 @@ function LogPageContent() {
         </div>
         
         <button
-          onClick={() => fetchLogs(true)}
+          onClick={() => fetchLogs(currentPage, true)}
           disabled={refreshing}
           className={`flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors ${
             refreshing ? 'opacity-70 cursor-not-allowed' : ''
@@ -225,6 +250,32 @@ function LogPageContent() {
               )}
             </tbody>
           </table>
+        </div>
+        
+        {/* Pagination Controls */}
+        <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+          <div className="text-sm text-gray-500">
+            Showing <span className="font-medium">{Math.min((currentPage - 1) * logsPerPage + 1, totalLogs)}</span> to <span className="font-medium">{Math.min(currentPage * logsPerPage, totalLogs)}</span> of <span className="font-medium">{totalLogs}</span> results
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="p-2 rounded-lg border border-gray-300 bg-white text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-sm font-medium text-gray-700">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              className="p-2 rounded-lg border border-gray-300 bg-white text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

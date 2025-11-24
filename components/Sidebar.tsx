@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Database, FileText, Home, Settings, X, Clock, HardDrive, Terminal } from 'lucide-react';
+import { Database, FileText, Home, Settings, X, Clock, HardDrive, Terminal, GitMerge } from 'lucide-react';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -13,6 +13,7 @@ interface SidebarProps {
 const menuItems = [
   { icon: Home, label: 'หน้าหลัก', href: '/' },
   { icon: Database, label: 'Database', href: '/database' },
+  { icon: GitMerge, label: 'API Builder', href: '/api-builder' },
   { icon: HardDrive, label: 'Backup', href: '/backup' },
   { icon: FileText, label: 'Logs', href: '/log' },
   { icon: Settings, label: 'ตั้งค่า', href: '/settings' },

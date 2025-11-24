@@ -1,0 +1,78 @@
+[
+  {
+    "name": "adsinfo",
+    "slug": "allads",
+    "tables": [
+      {
+        "dataset": "ADS_DB",
+        "table": "Piea"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Nolan"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Thomas"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Irene"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Shazam"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "IU"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Cookie"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Lucifer"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Bailu"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Joanne"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Bubble"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Newgate"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Minho"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Risa"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Sim"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Vivien"
+      },
+      {
+        "dataset": "ADS_DB",
+        "table": "Boogey"
+      }
+    ],
+    "type": "combine",
+    "createdAt": "2025-11-23T16:28:30.837Z"
+  }
+]
